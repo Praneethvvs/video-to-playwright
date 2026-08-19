@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+*.egg-info/
+
+# pytest / Playwright
+.pytest_cache/
+test-results/
+playwright-report/
+.artifacts/
+*.webm
+trace.zip
+
+# Media and derived artifacts — recordings often contain real customer data,
+# so keep them out of version control by default.
+*.mp4
+*.mov
+*.mkv
+*.vtt
+*.srt
+*.docx
+frames/
+frames_*/
+recordings/
+
+# Local
+.env
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

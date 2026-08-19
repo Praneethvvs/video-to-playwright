@@ -1,0 +1,322 @@
+---
+name: video-to-playwright
+description: Turn a screen recording (plus transcript if there is one) of someone manually testing a web app into a verified, passing Playwright suite, and produce a single walkthrough video so a human can confirm the tests match what was demonstrated. Use this whenever someone points at a recording, a Teams/Zoom/Loom capture, a `.mp4`/`.webm`/`.mov`, or a manual QA walkthrough and wants it turned into automated tests, regression coverage, or a PR gate — including phrasings like "automate this flow", "here's a video of our release checks", "can you write Playwright for this", "turn our manual testing into tests", or when they supply a video path and a `.docx`/`.vtt` transcript together. Also use it when converting a narrated demo into end-to-end tests, or when asked to verify that generated tests actually match a recording.
+---
+
+# Video → verified Playwright suite
+
+A recording tells you **what a human did and why**. It cannot tell you **how to address anything in
+code**. Those come from two different places, and keeping them separate is the whole method:
+
+| Input | Supplies | Cannot supply |
+|---|---|---|
+| Video frames | the sequence, the UI state at each step | durable locators — pixels carry no roles or test-ids |
+| Narration / transcript | intent, expected outcomes, business rules, prerequisites | anything the speaker didn't say aloud |
+| App source + running app | how to address every element | which flows anyone cares about |
+
+The suite is the **join** of those three. Everything below exists to make that join reliable.
+
+## The one rule
+
+**Never ship a *test* containing a locator or assertion you have not confirmed against the running
+application.** A plausible-looking test that was never executed is worse than no test: it reads as
+coverage, passes review, and fails silently later.
+
+This governs test code, not the spec. The spec (step 5) is *supposed* to contain unverified candidate
+assertions — that's its job, and marking them as candidates is how they reach a human for
+confirmation. The rule bites at the point code gets committed.
+
+In practice this means the first draft is always partly wrong, and that's expected. The value of this
+skill is the verify-and-fix loop, not the initial generation. Budget for it.
+
+## Workflow
+
+### 1. Gather inputs and clarify what's missing
+
+Read `references/clarification-loop.md` — it lists what you need, when to ask, and how to keep from
+drip-feeding questions.
+
+Minimum to start: the video path, the app URL to test against, and where the tests should live.
+Ask for a `.vtt` transcript specifically if only a `.docx` was given — Teams `.docx` exports usually
+collapse to a single timestamp, while `.vtt` has per-cue times that let you align narration to frames.
+
+Ask, don't assume, and ask at the checkpoints marked below rather than all at once. Questions asked
+after you've seen the footage are much better than questions asked before.
+
+### 2. Probe the media before trusting it
+
+The scripts need an ffmpeg binary. If one isn't on PATH, install the bundled wheel — no admin rights,
+no PATH changes, and it works inside a project venv, which is where you'll be running from by step 10:
+
+```bash
+pip install imageio-ffmpeg
+python scripts/probe_media.py <video>
+```
+
+Reports duration, resolution, bitrate, and — importantly — whether the audio track actually contains
+speech. Screen recordings frequently ship with a silent or near-silent track, and discovering that
+after you've built a plan around "the narration will tell us" is expensive.
+
+If there is no narration, say so plainly and early: every assertion will have to come from a human
+review, which roughly doubles the effort. That's a schedule fact the requester needs.
+
+### 3. Extract frames
+
+```bash
+python scripts/extract_frames.py <video> --out <dir>
+```
+
+Scene-change detection plus a uniform time-based sample. Both are needed: scene detection alone
+misses long stretches where the only change is typing or a spinner, and uniform sampling alone misses
+fast transitions. Frames are named with their timestamp so you can cite them later.
+
+A long recording yields 60–100 frames, so triage rather than reading them all in order:
+
+1. **Sweep the URL bar first.** Crop just that strip from every frame and read them as one batch — it's
+   cheap, and it gives you the route structure and the real entity IDs, which is the single highest-value
+   data in any recording. `grab_frame.py --crop` does this.
+2. **Read one frame per distinct screen** to build the map of where the flow goes.
+3. **Then go deep only where a value matters** — a field being filled, a count changing, a status chip.
+
+That order stops you spending most of your attention on frames that turn out to be the same screen.
+
+**Then read the detail with `scripts/grab_frame.py`.** Bulk extraction maps a recording; it does not
+let you read it. Any moment where a *value* matters — a field being typed, a grid cell, a status chip,
+a toast — needs a precise grab, at native resolution, cropped and magnified if small:
+
+```bash
+python scripts/grab_frame.py <video> --at 16 --crop 60,430,900,140 --zoom 2
+python scripts/grab_frame.py <video> --from 200 --to 213      # 1fps over a suspicious stretch
+```
+
+Do this for every gap the extractor reports, and always for the final seconds. **A reported gap means
+scene detection found nothing, not that nothing happened.** A job completing may change only a status
+chip and two columns — well under any threshold. Concluding from a trailing gap that "the flow never
+finished" has already been wrong in practice: the outcome landed in the last 12 seconds and coarse
+sampling missed it entirely.
+
+### 4. Read the transcript — or handle its absence
+
+```bash
+python scripts/read_transcript.py <transcript> --classify
+```
+
+Handles `.vtt`, `.srt`, `.docx` and `.txt`, returning ordered utterances with timestamps where
+available, tagged as likely preconditions / expectations / rules.
+
+**If there is no narration** (step 2 told you), skip the command but not the thinking. The four
+categories below are still the right skeleton for the spec — you simply fill *expectations* and
+*business rules* from the human review at step 5's checkpoint instead of from the artifact. Say so
+explicitly in the spec: a reader needs to know an assertion came from a person, not the footage.
+
+Mine it for four things, and keep them separate:
+- **Prerequisites** — state that existed before recording started ("you have a client created…")
+- **Actions** — what they did
+- **Expectations** — "you should see…", "you should not be able to…" — these become assertions
+- **Business rules** — the valuable tests, usually phrased as constraints
+
+Transcription errors are common in domain vocabulary. Flag suspicious terms for confirmation rather
+than encoding them.
+
+### 5. Draft the spec, with holes left as holes
+
+Write a markdown spec: preconditions, numbered steps, and assertions quoted from the narration.
+
+Where the recording doesn't say what "correct" means, write an explicit open question. **Do not
+invent an assertion to fill the gap.** A generated `to_be_visible()` that nobody asked for is the
+main way this pipeline produces fake coverage.
+
+**Checkpoint — ask now:** put the open questions to the requester in one batch. This is the highest-value
+question round; you've seen the footage and know exactly what's ambiguous.
+
+**If nobody is there to answer** — a batch job, a queued task, an absent requester — don't stall and
+don't guess. Build everything that doesn't depend on the answers, leave the dependent tests unwritten,
+and put the questions in the handoff. A suite of four solid tests plus five clearly-stated open
+questions is a good outcome. Five solid tests plus four invented assertions is not, and the difference
+is invisible until something breaks.
+
+### 6. Build the locator vocabulary from source
+
+If you have the app's source, extract the addressable surface: routes, components, their rendered
+ARIA roles and accessible names, and any test-ids. This is what turns "they clicked the thing at
+640,320" into `get_by_role('option', name='OPT')`.
+
+If you don't have source access, skip to step 7 — the running app alone is enough, just slower.
+
+### 7. Verify every locator against the running app
+
+Non-negotiable, and where most of the real work is. Confirm each locator resolves to **exactly one**
+element in the real application.
+
+**Ask Playwright for the accessibility tree directly.** `locator.aria_snapshot()` returns it as a
+string, so a short throwaway script prints exactly what the test runner sees:
+
+```python
+page.goto(URL)
+print(page.locator("body").aria_snapshot())          # or scope to a card/dialog
+```
+
+That one output usually answers a dozen questions at once: which things are really headings, whether
+cells and headers have accessible names, what state attributes are exposed (`[selected]`, `[checked]`,
+`[disabled]`), and which controls are disabled. Write similar throwaway scripts to count matches and
+dump `col-id`s or data attributes — they're cheap, and they're how the locator table gets built.
+
+A deliberately failing `expect` also prints the aria snapshot in its call log, which is handy when a
+test is already failing and you want to know why. But don't reach for that when you just want to *look*
+at the tree — `aria_snapshot()` is faster and doesn't require breaking something first.
+
+Playwright's snapshot is the **source of truth** because Playwright is what the tests run on. Other
+tools that expose an accessibility tree — MCP servers, devtools panels, extensions — can serialize it
+differently and omit computed names. Trusting one of those over Playwright has produced confidently
+wrong locator tables that had to be retracted.
+
+Driving a browser interactively (via a Playwright/CDP MCP server, if you have one) is useful for
+*exploring* an unfamiliar app — opening menus, finding what exists. But treat anything it tells you
+about accessible names as a hypothesis, and confirm through Playwright before committing a locator.
+
+Read `references/gotchas-web-frameworks.md` **before** writing locators. It documents traps that cost
+hours each: virtualized grids, portalled dropdowns, dialogs that persist after closing, toast
+containers that mount on demand, generated ids that change every render. Most modern component
+libraries hit several of these.
+
+### 8. Write the tests
+
+Structure them so a broken selector is a one-line fix: page objects for intent, a helpers module for
+framework quirks, fixtures for setup. See `assets/` for starting templates.
+
+Prefer role + accessible name. Fall back through label → placeholder → text → test-id → and if none
+of those work, that element needs instrumenting — record it as a backlog item rather than reaching for
+a positional selector. `nth(0)` is how suites rot.
+
+Tests must leave the environment as they found it. If a test creates something, a fixture deletes it
+even when the test fails.
+
+**Find the teardown path before you write the create path.** Recordings often demonstrate creation and
+never deletion, and some things simply cannot be deleted through the UI. Check while you're still in
+the app (step 7) — if a flow creates a client, a batch and 27 rows with no way to remove them, that
+changes the whole approach: unique names per run, an API cleanup route, or an agreement that this suite
+only runs against a resettable environment. Discovering it at step 9 means rewriting.
+
+### 9. Run the loop until green
+
+Run → read the failure → fix → repeat. Read `references/verification-loop.md` for how to read
+Playwright failures efficiently and what the common categories mean.
+
+Expect several rounds. In the reference implementation this took six, and three of them exposed wrong
+assumptions rather than typos — including one race that only appeared when the run was slowed down.
+
+**Checkpoint — ask now:** if a failure suggests the app genuinely disagrees with the recording (a
+control moved, a rule changed), ask. Do not rewrite the assertion to match current behaviour; that
+silently discards the thing the recording was evidence of.
+
+As at step 5, **if nobody is available to answer, don't stall.** Leave that test unwritten, record the
+disagreement in the handoff with what the recording claimed and what you measured, and carry on with the
+rest. Blocking the whole run on one unanswered question wastes the work you could still deliver.
+
+Before calling something drift, rule out the boring explanations: a column scrolled out of the viewport
+is not a missing column (the header row settles it), and a control you can't reach may be behind a menu
+you haven't opened. Report drift with the evidence and what you eliminated.
+
+### 10. Record one walkthrough video
+
+One continuous recording of the whole verified flow, in the same order as the original, so a reviewer
+can compare side by side. Read `references/recording-verification-video.md` — it covers why this is a
+separate artifact from the CI suite, how to pace it, and the resolution trap that makes videos
+unreadable.
+
+### 11. Hand off with a traceability matrix
+
+List every claim and mark it automated / partial / blocked / not built, with a count. "8 of 21 narrated
+claims are automated" is an honest, useful handoff. "Tests written ✅" is not.
+
+Pick the denominator from what you actually had:
+- **Narrated recording** → claims spoken in the transcript. The best denominator, because the reviewer
+  recognises their own words.
+- **Silent recording** → distinct observable state changes in the footage: navigations, submissions,
+  and every before/after pair you can point at two frames for. Say how you counted, so the number
+  means something.
+
+Either way, split the count by provenance — derived from the artifact versus confirmed by a human —
+because those carry very different confidence and a reader deserves to know which is which.
+
+Include the assertions your tests make that the narration never mentioned — those are discoveries
+from verification, and if any is wrong behaviour, the test is wrong.
+
+## What good output looks like
+
+- Every test passes, and was seen to pass
+- One walkthrough video at full viewport resolution
+- A traceability matrix with an explicit covered/total count
+- A list of open questions for the human, not silently-guessed answers
+- An instrumentation backlog: elements that need `aria-label` or `data-testid`
+- The target environment in the state you found it
+
+## What to avoid
+
+**Inventing assertions.** If the recording doesn't say what correct means, ask.
+
+**Asserting what you merely observed.** A subtler version of the same mistake, and it strikes during
+step 7 precisely because you're looking at the real app: you notice something true — exactly one option
+is selected, there are three rows, a field shows a particular value — and assert it. But "true on the
+day I looked" is not a requirement. Nobody asked for it, so nobody will recognise it when it fails, and
+on shared data it will fail without any defect existing. Before writing an assertion, ask which claim
+it serves. If it maps to nothing in the spec, it belongs in the open-questions list, not the test.
+
+Things you *discover* during verification are still valuable — auto-filled fields, absent toasts,
+disabled controls. Put them in the handoff as "assertions the narration never made, please confirm"
+and only promote them to tests once a human has.
+
+**Trusting a first draft.** Locators derived from source or frames are hypotheses until executed.
+
+**Positional selectors.** `nth(2)` passes today and breaks when a row is added.
+
+**Silent fallbacks.** If you add a workaround because the obvious approach failed, either prove the
+obvious approach is genuinely broken or remove the workaround. A fallback that masks a regression is
+worse than a failing test.
+
+**Claiming end-to-end.** If the tests deep-link past the setup steps, they're integration tests of a
+page. Say so. Overclaiming coverage is how people stop trusting a suite.
+
+## Where this has been validated, and what to do when your stack differs
+
+Be honest with yourself about the evidence base. The **method** — video for sequence, source for
+vocabulary, running app for locators, plus the verify loop — is framework-independent, and the media and
+transcript scripts work on any screen recording.
+
+The **gotchas** are only as general as the libraries they name. They were measured on a React app using
+AG Grid, a Base UI-family component library, and Sonner toasts, against an environment that needed **no
+authentication**. Those libraries are widespread, so most entries transfer — but several important paths
+are unexercised: SSO/`storageState` login flows, role-gated UI, apps whose routes carry no state (so
+nothing is deep-linkable), iframes, multi-tab flows, native OS file dialogs, canvas-only interfaces, and
+TypeScript projects.
+
+So treat `references/gotchas-web-frameworks.md` as a **starting checklist, not a specification**. When
+your app uses a different grid, dialog or toast library, the *categories* still apply — portalling,
+virtualization, generated ids, mount-on-demand containers, strict-mode duplicates — but the specific
+selectors and behaviours will not. Measure, don't assume; that's why every entry says how it was measured.
+
+**Then write down what you find.** If you spend an hour discovering that some library virtualizes
+differently, or that a dialog behaves unexpectedly, append it to the gotchas file with the measurement
+that proves it. Each entry saves the next person that hour, and this reference only becomes genuinely
+general by accumulating real measurements from real apps — not by anyone guessing in advance.
+
+## Reference files
+
+| File | Read when |
+|---|---|
+| `references/clarification-loop.md` | Before step 1, and at each checkpoint |
+| `references/gotchas-web-frameworks.md` | Before writing any locator |
+| `references/verification-loop.md` | During step 9, when failures aren't obvious |
+| `references/recording-verification-video.md` | At step 10 |
+
+`assets/` holds templates: `conftest.template.py`, `page_object.template.py`,
+`walkthrough.template.py`. Python/pytest, but the TypeScript shapes are direct translations.
+
+`scripts/`:
+
+| Script | Purpose |
+|---|---|
+| `probe_media.py` | duration, resolution, bitrate, and whether the audio has speech |
+| `extract_frames.py` | auto-tuned scene detection + uniform coverage + gap report |
+| `grab_frame.py` | precise frames at native resolution, with crop and zoom — for reading detail |
+| `read_transcript.py` | `.vtt` / `.srt` / `.docx` / `.txt` → tagged utterances |
