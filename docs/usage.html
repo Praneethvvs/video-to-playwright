@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>video-to-playwright — usage guide</title>
+<style>
+  :root {
+    --ink: #1a1d21; --muted: #5b6572; --line: #e3e7ec; --bg: #ffffff;
+    --panel: #f7f9fb; --accent: #1f5fa8; --warn-bg: #fff8e6; --warn-line: #e6c86a;
+    --bad-bg: #fdf1f1; --bad-line: #e0a3a3; --good-bg: #f1f8f3; --good-line: #9fc9ac;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { display: grid; grid-template-columns: 240px minmax(0,1fr); gap: 48px;
+    max-width: 1140px; margin: 0 auto; padding: 40px 32px 96px; }
+  nav { position: sticky; top: 40px; align-self: start; font-size: 14px; }
+  nav p { font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; margin: 0 0 10px; }
+  nav a { display: block; color: var(--muted); text-decoration: none; padding: 5px 0 5px 10px; border-left: 2px solid transparent; }
+  nav a:hover { color: var(--accent); border-left-color: var(--accent); }
+  header.top { border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 32px; }
+  h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0; }
+  h2 { font-size: 20px; margin: 44px 0 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  h2:first-of-type { border-top: none; margin-top: 0; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  p, li { max-width: 74ch; }
+  code { font: 13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; background: var(--panel); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+  .box { border-radius: 6px; padding: 14px 18px; margin: 18px 0; border-left: 4px solid; }
+  .warn { background: var(--warn-bg); border-color: var(--warn-line); }
+  .bad { background: var(--bad-bg); border-color: var(--bad-line); }
+  .good { background: var(--good-bg); border-color: var(--good-line); }
+  .box p:first-child { margin-top: 0; } .box p:last-child { margin-bottom: 0; }
+  .lead { font-size: 18px; }
+  ol.steps > li { margin-bottom: 14px; }
+  @media print { nav { display: none; } .wrap { grid-template-columns: 1fr; padding: 0; } }
+  @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; gap: 0; } nav { position: static; margin-bottom: 28px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav>
+  <p>Contents</p>
+  <a href="#what">What it does</a>
+  <a href="#rule">The one rule</a>
+  <a href="#install">Install</a>
+  <a href="#use">How to use it</a>
+  <a href="#recording">Recording guidance</a>
+  <a href="#workflow">The workflow</a>
+  <a href="#output">What you get</a>
+  <a href="#gotchas">The gotchas file</a>
+  <a href="#scope">Honest scope</a>
+  <a href="#faq">FAQ</a>
+</nav>
+
+<main>
+<header class="top">
+  <h1>video-to-playwright</h1>
+  <p class="sub">A Claude Code skill that turns a recording of manual browser testing into a verified
+  Playwright suite — plus a walkthrough video for human sign-off.</p>
+</header>
+
+<h2 id="what">What it does</h2>
+
+<p class="lead">Someone records themselves doing a manual test pass. The skill turns that into automated
+browser tests, and produces one video so the person who made the recording can confirm the tests really do
+what they demonstrated — without reading any code.</p>
+
+<p>The reason this needs a method rather than a prompt: a recording tells you <strong>what a human did and
+why</strong>, but it cannot tell you <strong>how to address anything in code</strong>. Pixels carry no
+element names. So three sources get joined, and keeping them separate is the trick:</p>
+
+<table>
+  <tr><th>Source</th><th>Gives you</th><th>Can't give you</th></tr>
+  <tr><td>Video frames</td><td>the sequence, the screen at each step</td><td>durable locators</td></tr>
+  <tr><td>Narration / transcript</td><td>intent, expected results, business rules, prerequisites</td><td>anything not said aloud</td></tr>
+  <tr><td>App source + running app</td><td>how to address every element</td><td>which flows anyone cares about</td></tr>
+</table>
+
+<h2 id="rule">The one rule</h2>
+
+<div class="good">
+  <p><strong>Never ship a test containing a locator or assertion that hasn't been executed against the
+  running application.</strong> A plausible-looking test that was never run is worse than no test: it reads
+  as coverage, passes review, and fails silently later.</p>
+</div>
+
+<p>The corollary matters as much: <strong>never invent an assertion to fill a gap.</strong> If the
+recording doesn't say what "correct" means, that becomes a question for a human. If nobody answers, it
+becomes an honest hole in the traceability matrix. An honest hole is visible and fillable; fabricated
+coverage is invisible until it costs you a release.</p>
+
+<p>There's a subtler version of the same mistake, and it strikes while you're looking at the real app: you
+notice something true — exactly one option is selected, there are three rows — and assert it. But
+<em>true on the day I looked</em> is not a requirement. Nobody asked for it, so nobody recognises it when
+it breaks, and on shared data it will break with no defect present.</p>
+
+<h2 id="install">Install</h2>
+<p>Claude Code discovers skills from <code>~/.claude/skills/</code>:</p>
+<pre><code>git clone https://github.com/Praneethvvs/video-to-playwright.git \
+  ~/.claude/skills/video-to-playwright</code></pre>
+
+<h3>Requirements</h3>
+<table>
+  <tr><th>Requirement</th><th>Notes</th></tr>
+  <tr><td>Claude Code</td><td>or any agent harness that reads the skill and runs shell commands</td></tr>
+  <tr><td>Python 3.10+ with ffmpeg</td><td>If ffmpeg isn't on <code>PATH</code>: <code>pip install imageio-ffmpeg</code> — no admin rights, works in a venv</td></tr>
+  <tr><td>Playwright</td><td><code>pytest-playwright</code> or <code>@playwright/test</code></td></tr>
+  <tr><td>A running instance of the app</td><td>Not optional. Verification against the live app is the point.</td></tr>
+</table>
+
+<h2 id="use">How to use it</h2>
+<p>No special command — point Claude Code at the files and ask in plain language:</p>
+<pre><code>Here's a recording of our release checks: recordings/checkout-flow.mp4,
+and the transcript recordings/checkout-flow.vtt. I need a Playwright suite
+for this, and a video I can show the tester.</code></pre>
+
+<h3>What it will ask you</h3>
+<p>It asks <em>after</em> watching the footage, batched, with its best guess attached — so answers are
+usually one word. Expect three questions per checkpoint in the flow:</p>
+<ul>
+  <li><strong>What exactly were you checking here?</strong> "A banner appeared" / "it said this precise
+  text" / "the row reached this status" are three different tests with three different values.</li>
+  <li><strong>Where did this data come from?</strong> The recording shows the result of setup it never
+  captured.</li>
+  <li><strong>What would you have called a failure?</strong></li>
+</ul>
+<p>Answering those is what separates real tests from green-forever tests. Budget roughly 30 minutes.</p>
+
+<h3>Two things to have ready</h3>
+<ol>
+  <li><strong>A <code>.vtt</code> transcript, not just <code>.docx</code>.</strong> Teams exports both.
+  The <code>.docx</code> typically collapses the whole session to one timestamp; the <code>.vtt</code> has
+  per-cue times, which is what lets narration be aligned to frames automatically. Highest
+  value-per-word thing you can supply.</li>
+  <li><strong>Any file the flow uploads.</strong> A recording shows the file picker's result, never the
+  file itself. Without the fixture, that step can't be automated.</li>
+</ol>
+
+<h2 id="recording">Guidance for whoever records</h2>
+<table>
+  <tr><th>Do this</th><th>Why</th></tr>
+  <tr><td>Keep the browser <strong>address bar visible</strong></td><td>The URL carries the real record IDs the tests need to seed or deep-link to — the single highest-value data in a recording.</td></tr>
+  <tr><td>Narrate what you're <strong>checking</strong>, not just clicking</td><td>Narration is the only source of assertions. "Now I verify the total matches" becomes a real test; silence becomes a test that can't fail.</td></tr>
+  <tr><td>Record at <strong>1080p+</strong>, full window, no scaling</td><td>Compressed captures of dense tables are unreadable, and that's where the values are.</td></tr>
+  <tr><td>Pause briefly before and after each click</td><td>Frame sampling misses fast transitions.</td></tr>
+  <tr><td>Don't cut the waits</td><td>A long wait marks where a background job runs — that's information.</td></tr>
+  <tr><td>One flow per recording</td><td>Keeps the step list segmentable.</td></tr>
+</table>
+
+<div class="warn">
+  <p><strong>Silent recordings work, but cost about twice as much.</strong> With no narration, every
+  assertion has to come from a review conversation instead of the artifact. A single typed line per
+  recording — <em>"what I'm checking: the total matches the line items"</em> — recovers most of it for ten
+  seconds of effort.</p>
+</div>
+
+<h2 id="workflow">The workflow</h2>
+<ol class="steps">
+  <li><strong>Gather inputs and clarify.</strong> Video path, a URL to test against, where tests should live.</li>
+  <li><strong>Probe the media.</strong> Duration, resolution, and crucially whether the audio contains speech.</li>
+  <li><strong>Extract frames.</strong> Scene detection plus uniform coverage, then precise grabs where values matter.</li>
+  <li><strong>Read the transcript.</strong> Split into prerequisites, actions, expectations, business rules.</li>
+  <li><strong>Draft the spec, gaps left as gaps.</strong> Then ask the open questions in one batch.</li>
+  <li><strong>Build a locator vocabulary</strong> from the app's source, if available.</li>
+  <li><strong>Verify every locator against the running app.</strong> Where most of the real work is.</li>
+  <li><strong>Write the tests</strong> — page objects for intent, helpers for framework quirks.</li>
+  <li><strong>Run the loop until green.</strong> Expect several rounds; the first draft is always partly wrong.</li>
+  <li><strong>Record one walkthrough video</strong> in the recording's order.</li>
+  <li><strong>Hand off a traceability matrix</strong> with an explicit covered/total count.</li>
+</ol>
+
+<h2 id="output">What you get</h2>
+<table>
+  <tr><th>Output</th><th>Detail</th></tr>
+  <tr><td>A passing suite</td><td>Structured so a broken selector is a one-line fix</td></tr>
+  <tr><td>One walkthrough video</td><td>Continuous, at viewport resolution, in the recording's order, so a non-engineer can verify it</td></tr>
+  <tr><td>A traceability matrix</td><td>Every claim marked automated / partial / blocked / not built, with counts and the provenance of each assertion</td></tr>
+  <tr><td>Open questions</td><td>For a human — not silently-guessed answers</td></tr>
+  <tr><td>An instrumentation backlog</td><td>Elements needing <code>aria-label</code> or <code>data-testid</code>. These are usually real accessibility defects too.</td></tr>
+</table>
+
+<h3>Realistic numbers</h3>
+<p>On a 10-minute narrated recording of a single screen, in testing: <strong>27 of 37 narrated claims
+automated</strong>, 20 passing tests, 8 open questions, and a walkthrough video — in roughly 90 minutes of
+machine time, still needing a human review pass.</p>
+<p>"Point at a video, get a suite" is not the target. "Point at a video, get a reviewed draft plus a
+verification video" is — and that's still a large win over writing them by hand.</p>
+
+<h2 id="gotchas">The gotchas file is the most reusable part</h2>
+<p><code>references/gotchas-web-frameworks.md</code> documents locator traps that silently break the
+obvious approach, each with the measurement that demonstrates it. A sample:</p>
+<ul>
+  <li>Off-screen grid columns are usually still in the DOM — and how to tell "scrolled away" from
+  "genuinely absent", which is the difference between a locator bug and app drift</li>
+  <li>Pinned grid columns split one row across three DOM elements sharing a <code>row-id</code></li>
+  <li>DOM order is not display order, so never address rows by index</li>
+  <li>Dropdown options are portalled out of the dialog that opened them</li>
+  <li><code>[role=dialog]</code> nodes persist after closing — assert hidden, not absent</li>
+  <li>Toast containers may be mounted on demand, which breaks negative assertions confusingly</li>
+  <li>Generated ids regenerate every render</li>
+  <li>A missing <code>aria-label</code> proves nothing — for most roles the name comes from text content</li>
+  <li><code>expect.toPass()</code> is JavaScript-only, and what to use in Python instead</li>
+</ul>
+
+<h2 id="scope">Honest scope</h2>
+<p>The <strong>method</strong> is framework-independent, and the media and transcript scripts work on any
+recording. The <strong>gotchas</strong> are only as general as the libraries they name.</p>
+
+<div class="bad">
+  <p>They were measured on a React app using AG Grid, a Base UI-family component library and Sonner
+  toasts, against an environment that required <strong>no authentication</strong>. Genuinely unexercised:
+  SSO / <code>storageState</code> login flows and role-gated UI; apps whose routes carry no state, so
+  nothing is deep-linkable; iframes, multi-tab flows, native OS file dialogs, canvas-only interfaces;
+  TypeScript projects; and CI integration.</p>
+</div>
+
+<p>Treat the gotchas file as a <strong>starting checklist, not a specification</strong>. When your stack
+differs, the <em>categories</em> still apply — portalling, virtualization, generated ids,
+mount-on-demand containers, strict-mode duplicates — but the specifics will not. Measure, don't assume.</p>
+
+<p><strong>Then write down what you find.</strong> If you spend an hour discovering how some library
+virtualizes, append it with the measurement that proves it. This reference only becomes genuinely general
+by accumulating real measurements from real apps. Pull requests adding measured gotchas for other stacks
+are the most valuable contribution you can make.</p>
+
+<h2 id="faq">FAQ</h2>
+
+<h3>Can it do it fully automatically?</h3>
+<p>No, and it shouldn't pretend to. Two things can't be automated: what "correct" means at each step, and
+the setup state the recording never captured. Both need the person who recorded it.</p>
+
+<h3>Does this replace manual testing?</h3>
+<p>No. It replaces the repetitive re-verification of flows already checked once. Exploratory testing and
+judgement still need a person.</p>
+
+<h3>Are the results end-to-end tests?</h3>
+<p>Usually not in the strict sense. They hit the real UI, API and database with nothing mocked — but they
+tend to deep-link past the setup steps rather than clicking through them, which makes them integration
+tests of a screen. Say so rather than overclaiming; overclaimed coverage is how teams stop trusting a
+suite.</p>
+
+<h3>Does the model matter?</h3>
+<p>Less than the loop around it. In development the first draft of the locators was substantially wrong,
+and only became correct after roughly six runs against the real app. Any capable model with the same
+harness should land in a similar place. The durable assets are the gotchas file and the discipline.</p>
+
+<h3>How much maintenance?</h3>
+<p>Real data point: during development the app under test changed four times in three weeks — a new grid,
+a new tab, a renamed column, a renamed record. Two of those broke tests, and both breakages were caused by
+assertions that encoded incidental state rather than requirements. Put the suite in CI, or drift surfaces
+the day before a release instead of the day it happens.</p>
+
+<footer style="margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:14px">
+  MIT licensed. Not affiliated with or endorsed by Microsoft or the Playwright project. Examples in the
+  reference files use a fictional sample application.
+</footer>
+
+</main>
+</div>
+</body>
+</html>

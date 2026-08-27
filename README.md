@@ -26,6 +26,8 @@ doesn't say what "correct" means, that becomes a question for a human, and if no
 becomes an honest hole in the traceability matrix. An honest hole is visible and someone can fill it.
 Fabricated coverage is invisible until it costs you a release.
 
+**Full usage guide:** [docs/usage.html](docs/usage.html) — open it locally, or read the sections below.
+
 ## Install
 
 Claude Code discovers skills from `~/.claude/skills/`:
