@@ -30,16 +30,42 @@ Fabricated coverage is invisible until it costs you a release.
 
 ## Install
 
-Claude Code discovers skills from `~/.claude/skills/`:
+Nothing here is specific to one agent. `SKILL.md` is an instruction set in Markdown and the scripts are
+plain Python, so any harness that can read files and run shell commands will do.
+
+### Claude Code
+
+Skills are discovered from `~/.claude/skills/`, and trigger from the request itself:
 
 ```bash
 git clone https://github.com/<you>/video-to-playwright.git ~/.claude/skills/video-to-playwright
 ```
 
-Then just ask, in natural language:
-
 > Here's a recording of our release checks: `~/recordings/checkout-flow.mp4`, and the transcript.
 > I need Playwright tests for this.
+
+### Codex, or any other agent
+
+Clone it anywhere, then **point the agent at the workflow explicitly** — Codex does not auto-load skill
+files the way Claude Code does, so it needs the instruction:
+
+```bash
+git clone https://github.com/<you>/video-to-playwright.git
+```
+
+> Read `video-to-playwright/SKILL.md` and follow it. Here's the recording:
+> `recordings/checkout-flow.mp4`, and the transcript: `recordings/checkout-flow.vtt`.
+
+`AGENTS.md` carries the always-on rules for Codex sessions, so cloning this *into* a project picks those
+up automatically. The YAML frontmatter at the top of `SKILL.md` is Claude Code's discovery metadata and
+is inert elsewhere.
+
+### Without any model at all
+
+Roughly two-thirds of this is useful with no agent involved: the scripts pull frames and read
+transcripts on their own, `references/gotchas-web-frameworks.md` is documentation a developer can read
+before writing locators by hand, and `playwright codegen` is free and records a flow into runnable code.
+Slower than the full workflow, but no licence required.
 
 ## Requirements
 
