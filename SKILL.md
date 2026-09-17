@@ -319,6 +319,7 @@ general by accumulating real measurements from real apps — not by anyone guess
 | `references/verification-loop.md` | During step 9, when failures aren't obvious |
 | `references/recording-verification-video.md` | At step 10 |
 | `references/silent-recordings.md` | Only if the recording has no narration and no re-record is possible |
+| `references/running-with-codex.md` | Driving this from Codex rather than Claude Code |
 
 `assets/` holds templates: `conftest.template.py`, `page_object.template.py`,
 `walkthrough.template.py`. Python/pytest, but the TypeScript shapes are direct translations.

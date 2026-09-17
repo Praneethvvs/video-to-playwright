@@ -21,6 +21,9 @@ does not auto-load skill files**, so point it at the workflow explicitly:
 If you have cloned this alongside a project rather than into it, give the path:
 `Read ~/skills/video-to-playwright/SKILL.md and follow it.`
 
+For unattended runs, the exact `codex exec` invocation and the argument-quoting trap that breaks
+multi-line prompts are in `references/running-with-codex.md`.
+
 The YAML frontmatter at the top of `SKILL.md` is Claude Code's discovery metadata. It is inert
 everywhere else and can be ignored.
 

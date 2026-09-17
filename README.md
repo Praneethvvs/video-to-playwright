@@ -60,6 +60,11 @@ git clone https://github.com/<you>/video-to-playwright.git
 up automatically. The YAML frontmatter at the top of `SKILL.md` is Claude Code's discovery metadata and
 is inert elsewhere.
 
+**[`references/running-with-codex.md`](references/running-with-codex.md)** has the verified detail:
+the `codex exec` flags for unattended runs, where the binary hides on Windows, and the
+argument-quoting trap that silently breaks multi-line prompts. This path has been run end to end, not
+assumed.
+
 ### Without any model at all
 
 Roughly two-thirds of this is useful with no agent involved: the scripts pull frames and read
