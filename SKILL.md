@@ -103,9 +103,28 @@ The report splits **breaking** drift (something disappeared that a committed tes
 those tests are stale) from **benign** drift (the app gained something; nothing references it).
 Exit code is non-zero only for breaking drift, which makes it usable as a scheduled job.
 
-#### What "update the tests" may and may not mean
+#### What this check cannot see
 
-This is where care is needed, because two different situations look identical in a diff.
+It compares structure, so it catches things appearing and disappearing. A **modification** — a control
+that keeps its name and changes what it does — is invisible to it. A rule changing, a calculation
+differing, a field meaning something new: all report as no drift.
+
+Only the tests catch that, which is why the suite exists alongside the check rather than being replaced
+by it. Read a clean report as "no locator has broken", never as "nothing has changed".
+
+#### Three answers to breaking drift, not two
+
+Each breaking change needs one of these, and the third is the one people forget:
+
+1. **Not intended** — the application has a defect. Leave the test alone and fix the app.
+2. **Intended, still tested** — the thing moved or was renamed. Update the locator.
+3. **Intended, gone for good** — the behaviour no longer exists, so the test is **redundant. Delete
+   it.** Do not repair a test for something nobody wants, and do not leave it skipped indefinitely; a
+   permanently skipped test is clutter that hides the real skips.
+
+What none of them is: quietly relaxing an assertion until it passes.
+
+#### Mechanical versus semantic, within answer 2
 
 **Mechanical drift — fix it.** The thing still exists and means the same, but is addressed
 differently: a grid was added so an index moved, a label was reworded without changing intent, a

@@ -18,8 +18,28 @@ Staleness is determined by searching the test tree for the affected name. That w
 workflow puts locators in page objects, so a name that matters appears in a small number of files. It
 will miss a locator assembled from fragments at runtime — a known limit, not a silent one.
 
-Usage:
-    python check_drift.py --map project-map.json --tests tests/ [--channel chrome]
+**What this cannot see.** The map records structure, so it detects things appearing and disappearing.
+A *modification* — a control that keeps its name and changes what it does — is invisible to it. A rule
+changing, a calculation differing, a field meaning something new: all report as "no drift". Only the
+tests themselves catch that, which is the whole reason the suite exists alongside this check. Treat a
+clean drift report as "no locator has broken", never as "nothing has changed".
+
+Usage, simplest first. With a `drift-config.json` beside the map, no flags are needed:
+
+    python check_drift.py                 # against the deployed environment
+    python check_drift.py --local         # against a local build of your branch
+
+    {
+      "map": "project-map.json",
+      "tests": "e2e",
+      "dev_url":   "https://app-dev.example.com",
+      "local_url": "http://localhost:4300",
+      "channel":   "chrome"
+    }
+
+Everything is still overridable:
+
+    python check_drift.py --map project-map.json --tests tests/ --base-url http://localhost:4300
     python check_drift.py --map project-map.json --against fresh-map.json --tests tests/
 """
 
@@ -179,20 +199,63 @@ def diff_route(old: dict, new: dict, tests_dir: Path) -> tuple[list[dict], list[
     return breaking, benign
 
 
+CONFIG_NAME = "drift-config.json"
+
+
+def find_config(explicit: str | None) -> tuple[dict, Path | None]:
+    """Load `drift-config.json` from an explicit path, the CWD, or a `scripts/` parent.
+
+    The point is that the common cases need no flags at all. A developer checking their branch should
+    type one thing, not remember four paths, because a command nobody can recall from memory is a
+    command that stops being run.
+    """
+    candidates = [Path(explicit)] if explicit else [
+        Path(CONFIG_NAME),
+        Path(__file__).parent.parent / CONFIG_NAME,
+    ]
+    for c in candidates:
+        if c.exists():
+            return json.loads(c.read_text(encoding="utf-8-sig")), c
+    return {}, None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--map", required=True, help="the committed project map")
+    ap.add_argument("--map", help="the committed project map (default: from drift-config.json)")
     ap.add_argument("--against", help="a second map file; omit to capture live now")
-    ap.add_argument("--tests", default="tests", help="test tree to search for stale references")
+    ap.add_argument("--tests", help="test tree to search for stale references")
     ap.add_argument("--channel")
     ap.add_argument(
         "--base-url",
-        help="check against this URL instead of the one in the map, e.g. a local build on a pull "
-        "request. Keep the environment class the same as the baseline's, or config differences "
-        "will read as drift.",
+        help="check against this URL instead of the map's, e.g. a local build of your branch",
     )
+    ap.add_argument(
+        "--local",
+        action="store_true",
+        help="shorthand for the config's local_url — use when checking your own branch",
+    )
+    ap.add_argument("--config", help=f"path to {CONFIG_NAME} (default: found automatically)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+
+    # Config fills in whatever was not passed, so the everyday commands need no flags.
+    cfg, cfg_path = find_config(args.config)
+    args.map = args.map or cfg.get("map", "project-map.json")
+    args.tests = args.tests or cfg.get("tests", "tests")
+    args.channel = args.channel or cfg.get("channel")
+    if args.local:
+        if not cfg.get("local_url"):
+            ap.error(f"--local needs a local_url in {CONFIG_NAME}")
+        args.base_url = cfg["local_url"]
+    elif not args.base_url:
+        args.base_url = cfg.get("dev_url")
+
+    if not Path(args.map).exists():
+        ap.error(
+            f"no project map at {args.map}. Capture one first:\n"
+            f"  python scripts/build_project_map.py --base-url <dev-url> "
+            f"--routes routes.txt --out {args.map}"
+        )
 
     stored = load(Path(args.map))
     fresh = load(Path(args.against)) if args.against else capture_fresh(
@@ -220,6 +283,23 @@ def main() -> int:
     # so its controls are missing for harness reasons, not because anyone changed the application —
     # and comparing it reports every control on the screen as having disappeared. Failing loudly here
     # is the difference between a gate people trust and one they turn off.
+    # An environment that isn't up is not drift. Without this, forgetting to start the local dev
+    # server reports every route as gone and reads as "the application is broken" — the single most
+    # likely way a developer meets this tool, and the worst possible first impression.
+    env_down = [
+        r for r in fresh.get("routes", [])
+        if not r.get("reachable") and r.get("failure_class") in ("environment-unreachable", "harness")
+    ]
+    if env_down and len(env_down) == len([r for r in fresh.get("routes", []) if not r.get("reachable")]):
+        print(f"Could not reach {fresh.get('base_url')} — nothing was compared.\n")
+        for r in env_down[:3]:
+            print(f"  {r['route']}")
+            print(f"      {r.get('failure_class')}: {str(r.get('error', ''))[:110]}")
+        print("\nIf you are checking a local build, is the dev server running and on the expected")
+        print("port? If you are checking a deployed environment, is the VPN up? This is an")
+        print("environment problem, not drift, so no tests are implicated.")
+        return 2
+
     unsettled = [
         r["route"] for r in fresh.get("routes", [])
         if r.get("reachable") and r.get("settled") is False
@@ -237,6 +317,8 @@ def main() -> int:
     stored_fp, fresh_fp = content_fingerprint(stored), content_fingerprint(fresh)
     if stored_fp == fresh_fp:
         print("No drift. Structure matches the committed map exactly.")
+        print("\nNote this only checks structure. A control that kept its name and changed what it")
+        print("does reports as no drift — only the tests catch that.")
         return 0
 
     tests_dir = Path(args.tests)
@@ -274,12 +356,21 @@ def main() -> int:
 
 
     if breaking:
-        print("Before writing new tests: confirm whether each breaking change is intended. Do NOT")
-        print("relax the affected assertions to match current behaviour — that discards the thing the")
-        print("original recording was evidence of, and can enshrine a regression as expected.")
-        print("Regenerate the map only once the changes are confirmed.")
-        print("\nIf a change here settles something a skipped test was waiting on, unskip it in the")
-        print("same commit, so the suite and the reason stay in step.")
+        print("Each change above needs one of three answers, and the third is easy to forget:\n")
+        print("  1. NOT INTENDED — the application has a defect. Leave the test alone; fix the app.")
+        print("  2. INTENDED, still tested — the thing moved or was renamed. Update the locator.")
+        print("  3. INTENDED, no longer exists — the behaviour is gone for good, so the test is")
+        print("     redundant. DELETE it. Do not repair a test for something nobody wants any more,")
+        print("     and do not leave it skipped forever; a permanently skipped test is clutter that")
+        print("     makes the real skips harder to see.")
+        print("\nWhat not to do: quietly relax an assertion so it passes against current behaviour.")
+        print("That discards what the recording was evidence of, and can enshrine a defect as the")
+        print("expected result.")
+        print("\nRegenerate the map only after the change is confirmed and deployed. If a change here")
+        print("settles something a skipped test was waiting on, unskip it in the same commit.")
+    else:
+        print("Remember this only checks structure. A control that kept its name and changed what it")
+        print("does reports as no drift — only the tests catch that.")
     return 1 if breaking else 0
 
 
