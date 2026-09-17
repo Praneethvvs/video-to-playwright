@@ -138,6 +138,12 @@ elements (left-pinned / centre / right-pinned), each carrying the same `row-id`.
 **`row-id` is usually the entity's real id.** That makes it the most stable handle available, and it
 pairs perfectly with API-seeded tests that already know the id they created.
 
+**A cell's accessible name can vanish while its `row-id` stays valid.** Measured: after a switch was
+toggled, horizontal virtualization moved columns and a row's title disappeared from the accessibility
+snapshot entirely — but `[row-id="…"] [col-id="title"]` still resolved. This is the strongest practical
+argument for addressing rows by `row-id` rather than by their visible text: the text is a rendering
+artifact of which columns happen to be in view, and interacting with the grid can change that.
+
 **DOM order is not display order.** Immediately after inserting a row, the new row displayed first but
 sat last in the DOM. Never address rows by index.
 

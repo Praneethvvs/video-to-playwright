@@ -118,6 +118,18 @@ recording was evidence of, and can enshrine a regression as expected. Mark the t
 When you cannot tell which it is, treat it as semantic. The cost of asking is a question; the cost of
 guessing wrong is a test that passes over a real defect.
 
+**Rule out a stale client cache before calling anything drift.** Measured case: after creating a
+record, switching to another tab in the same single-page app did not show it — the tab change reused a
+cached list — while a full route reload did. Read as drift, that is "the app no longer lists new
+records", which is wrong and alarming. Reload the route and re-check before classifying a missing
+record as semantic.
+
+**A map captures one state, and structure can depend on state.** Also measured: creating a record
+caused columns and controls to appear that were absent from the captured baseline. So a clean drift
+report does not guarantee every locator a test needs is present — the map describes the app at rest,
+and your test may be looking at it mid-flow. Verify locators in the state the test actually runs in,
+which is what step 7 is for.
+
 **Running unattended** — as a scheduled job, with nobody to ask — the same split applies, and it is
 what makes automation safe here: fix the mechanical, quarantine the semantic, report both, and never
 weaken an assertion to get to green. Regenerate and commit the map only once a human has confirmed

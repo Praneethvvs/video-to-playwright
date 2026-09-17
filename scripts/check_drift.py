@@ -53,12 +53,19 @@ def content_fingerprint(m: dict) -> str:
     ).hexdigest()[:16]
 
 
-def capture_fresh(stored: dict, channel: str | None, script_dir: Path) -> dict:
-    """Re-capture using the stored map's own base_url and route list, so the diff is apples to apples."""
+def capture_fresh(stored: dict, channel: str | None, script_dir: Path, map_path: Path) -> dict:
+    """Re-capture using the stored map's own base_url and route list, so the diff is apples to apples.
+
+    Scratch files are written beside the committed map rather than into the current working directory.
+    Using the CWD meant that running this from a project root scattered `.drift-fresh.json` there —
+    harmless in itself, but it quietly breaks any "keep everything under this directory" instruction
+    and leaves litter a caller did not ask for.
+    """
     routes = [r["route"] for r in stored["routes"]]
-    tmp_routes = Path(".drift-routes.txt")
+    work = map_path.parent
+    tmp_routes = work / ".drift-routes.txt"
     tmp_routes.write_text("\n".join(routes), encoding="utf-8")
-    tmp_map = Path(".drift-fresh.json")
+    tmp_map = work / ".drift-fresh.json"
     cmd = [
         sys.executable, str(script_dir / "build_project_map.py"),
         "--base-url", stored["base_url"],
@@ -70,6 +77,7 @@ def capture_fresh(stored: dict, channel: str | None, script_dir: Path) -> dict:
     subprocess.run(cmd, check=True)
     fresh = load(tmp_map)
     tmp_routes.unlink(missing_ok=True)
+    tmp_map.unlink(missing_ok=True)
     return fresh
 
 
@@ -178,7 +186,7 @@ def main() -> int:
 
     stored = load(Path(args.map))
     fresh = load(Path(args.against)) if args.against else capture_fresh(
-        stored, args.channel, Path(__file__).parent
+        stored, args.channel, Path(__file__).parent, Path(args.map)
     )
 
     stored_fp, fresh_fp = content_fingerprint(stored), content_fingerprint(fresh)
