@@ -104,34 +104,6 @@ def find_references(name: str, tests_dir: Path) -> list[str]:
     return hits
 
 
-def report_open_questions(path: Path) -> None:
-    """Print any parked questions that still have no answer.
-
-    A question is answered when the `Answer:` line has content. Anything still blank is a test that
-    cannot be written until someone decides something, and saying so on every run is the whole point
-    — an unanswered question that nobody is reminded of stays unanswered forever.
-    """
-    if not path.exists():
-        return
-    text = path.read_text(encoding="utf-8-sig", errors="replace")
-    blocks = re.split(r"^##\s+", text, flags=re.M)[1:]
-    unanswered = []
-    for b in blocks:
-        title = b.splitlines()[0].strip()
-        m = re.search(r"^Answer:\s*(.*)$", b, re.M)
-        answer = (m.group(1).strip() if m else "")
-        if not answer or answer.startswith("<"):
-            blocks_line = re.search(r"^Blocks:\s*(.*)$", b, re.M)
-            unanswered.append((title, blocks_line.group(1).strip() if blocks_line else ""))
-    if unanswered:
-        print(f"\nOpen questions — {len(unanswered)} still unanswered ({path.name}):\n")
-        for title, blocked in unanswered:
-            print(f"  {title}")
-            if blocked:
-                print(f"      blocks: {blocked}")
-        print("\nThese block tests that cannot be written until someone decides. They are not drift,")
-        print("and they will be reported every run until answered.")
-
 
 def diff_route(old: dict, new: dict, tests_dir: Path) -> tuple[list[dict], list[dict]]:
     breaking, benign = [], []
@@ -219,10 +191,6 @@ def main() -> int:
         "request. Keep the environment class the same as the baseline's, or config differences "
         "will read as drift.",
     )
-    ap.add_argument(
-        "--questions",
-        help="path to open-questions.md (default: alongside the test tree's parent)",
-    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -247,17 +215,28 @@ def main() -> int:
         print("backend as the baseline did, and has mocks disabled — otherwise data differences")
         print("will read as drift.\n")
 
-    questions_path = (
-        Path(args.questions) if args.questions else Path(args.tests).parent / "open-questions.md"
-    )
+
+    # Refuse to compare a capture that never settled. An unsettled route was photographed mid-render,
+    # so its controls are missing for harness reasons, not because anyone changed the application —
+    # and comparing it reports every control on the screen as having disappeared. Failing loudly here
+    # is the difference between a gate people trust and one they turn off.
+    unsettled = [
+        r["route"] for r in fresh.get("routes", [])
+        if r.get("reachable") and r.get("settled") is False
+    ]
+    if unsettled:
+        print("Capture did not settle, so no comparison was made:\n")
+        for r in unsettled:
+            print(f"  {r}")
+        print("\nThese screens were still rendering when sampled. Their controls are missing for")
+        print("harness reasons, not because the application changed, so treating this as drift would")
+        print("report every control on the screen as gone. Re-run; if it persists, the screen may")
+        print("never reach a stable state and needs a route-specific readiness signal.")
+        return 2
 
     stored_fp, fresh_fp = content_fingerprint(stored), content_fingerprint(fresh)
     if stored_fp == fresh_fp:
         print("No drift. Structure matches the committed map exactly.")
-        # Still report parked questions. A clean drift run is precisely when someone concludes
-        # everything is fine and moves on, so staying silent here is how a quarantined test becomes
-        # permanent.
-        report_open_questions(questions_path)
         return 0
 
     tests_dir = Path(args.tests)
@@ -293,18 +272,14 @@ def main() -> int:
             print(f"  {d['route']}: {d['kind']} — {d['detail']}")
         print()
 
-    # Surface questions already parked against tests. A scheduled run that reports drift but stays
-    # silent about known-unanswered questions lets the gap quietly persist: nobody is reminded, so
-    # nobody answers, so the tests stay quarantined indefinitely.
-    report_open_questions(questions_path)
 
     if breaking:
         print("Before writing new tests: confirm whether each breaking change is intended. Do NOT")
         print("relax the affected assertions to match current behaviour — that discards the thing the")
         print("original recording was evidence of, and can enshrine a regression as expected.")
         print("Regenerate the map only once the changes are confirmed.")
-        print("\nIf a change here answers a parked question, update open-questions.md and drop the")
-        print("test's quarantine marker in the same commit, so the record stays true.")
+        print("\nIf a change here settles something a skipped test was waiting on, unskip it in the")
+        print("same commit, so the suite and the reason stay in step.")
     return 1 if breaking else 0
 
 

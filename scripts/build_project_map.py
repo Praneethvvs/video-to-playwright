@@ -88,21 +88,45 @@ def parse_aria_snapshot(text: str) -> list[tuple[str, str]]:
     return out
 
 
-def settle_snapshot(page, attempts: int = 8, interval_ms: int = 1_000) -> tuple[str, bool]:
-    """Wait until the accessibility tree stops changing, then return it.
+#
 
-    Two identical consecutive snapshots is a real readiness signal, unlike a fixed sleep. It also
-    handles the awkward middle ground where a page has loaded but a grid is still fetching: the tree
-    keeps changing, so we keep waiting.
+# A settled page must also be a *populated* one. This is the minimum number of addressable controls
+# below which a capture is treated as "still loading" rather than "this screen is nearly empty".
+MIN_CONTROLS_FOR_READY = 3
 
-    Returns the snapshot and whether it actually settled, because a screen that never settles — a
-    polling dashboard, a spinner that never resolves — is worth recording as such rather than
-    silently treating the last sample as final.
+
+def _substance(snapshot: str) -> int:
+    """How many addressable controls the snapshot contains."""
+    return sum(1 for role, _ in parse_aria_snapshot(snapshot) if role in INTERESTING_ROLES)
+
+
+def settle_snapshot(page, attempts: int = 12, interval_ms: int = 1_000) -> tuple[str, bool]:
+    """Wait until the accessibility tree stops changing *and* has content, then return it.
+
+    Stability alone is not readiness, and getting this wrong is expensive. A page that is stably
+    *loading* — an empty shell, or a spinner that does not animate the tree — produces two identical
+    consecutive snapshots and would be accepted as settled. The resulting map records almost nothing,
+    and the next drift comparison reports every tab, heading and region as having disappeared.
+
+    That failure mode was observed before this check existed: two runs in three against an unchanged
+    application reported nineteen breaking changes. A blocking gate behaving that way is worse than no
+    gate, because people switch it off and stop believing the ones that are real.
+
+    So a capture must be stable across two samples *and* contain at least a few addressable controls.
+    The caller is told whether that was achieved, and an unsettled capture must not be treated as
+    authoritative.
     """
+    # Best effort first: most client-rendered apps are ready shortly after the network quiets down.
+    # Apps that poll never reach networkidle, so a timeout here is expected and not an error.
+    try:
+        page.wait_for_load_state("networkidle", timeout=15_000)
+    except Exception:  # noqa: BLE001 - a polling app simply never goes idle
+        pass
+
     previous = None
     for _ in range(attempts):
         current = page.locator("body").aria_snapshot()
-        if current == previous:
+        if current == previous and _substance(current) >= MIN_CONTROLS_FOR_READY:
             return current, True
         previous = current
         page.wait_for_timeout(interval_ms)

@@ -135,14 +135,16 @@ coverage — it's visible, and someone can fill it later.
 ## Ask at the point of work, not in a conversation
 
 A distinction worth getting right: the questions in this document are about *what the tester meant*,
-and belong in the elicitation checkpoints. But questions that surface later — during verification, or
-when a regression run finds the app disagreeing with the recording — are scoped to a specific test and
-will **recur on every run**.
+and belong in the elicitation checkpoints above.
 
-Those do not belong in a chat. Answered once in a conversation, the answer is lost, and the next run
-rediscovers the same disagreement as though it were new. Park them in `open-questions.md` in the test
-repo, keyed to the claim and the test they block, and let the regression run resurface them. See step
-11b.
+Questions that surface later are different. During verification, or when a regression run finds the
+app disagreeing with the recording, somebody has to decide whether that is a defect or an intended
+change. Those are scoped to one test and they recur on every run, so a chat is the wrong place —
+answered once, the answer is lost, and the next run rediscovers the same disagreement.
 
-The rule of thumb: **if the same question would be asked again next month, it needs to live in the
-repo.** If it is a one-off about this recording, ask it now.
+Put them where the work happens. If the test exists, skip it with the reason in the skip, so the CI
+report carries it. If the test does not exist yet, it is a backlog item and belongs in the team's
+tracker, which has an owner and a state. Step 11b covers both.
+
+The rule of thumb: **if the same question would be asked again next month, it needs to live outside
+the conversation.** If it is a one-off about this recording, ask it now.

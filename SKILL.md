@@ -388,43 +388,34 @@ those carry very different confidence and a reader deserves to know which is whi
 Include the assertions your tests make that the narration never mentioned — those are discoveries
 from verification, and if any is wrong behaviour, the test is wrong.
 
-### 11b. Park open questions where they will be found again
+### 11b. Record decisions where they cannot be lost
 
-A question asked in a chat window is answered once and then lost. These questions are scoped to
-specific tests and they recur — every regression run rediscovers the same disagreement — so they need
-to live with the test, not in a conversation.
+When the application disagrees with the recording, somebody has to decide whether it is a defect or an
+intended change. You cannot decide that, and the decision must not evaporate.
 
-Commit `open-questions.md` to the test repo. One entry per unanswered question:
+Two situations, and they have different homes. Resist inventing a third.
 
-```markdown
-## Q3 — economic Apply to Value absent on new rows
-Claim:      29, 30 (see spec.md)
-Blocks:     test_apply_to_value_adds_to_applied_list  [quarantined]
-Observed:   A newly created economic indicator has no apply_to_value column and never
-            appears in the Map to Ledger option list, including after a full reload.
-Ruled out:  stale SPA cache; the Manage menu; the Applied Economic Indicators card.
-Asked:      2026-09-17
-Answer:     <blank until someone fills it in>
-```
-
-Then mark the test itself, so the reason travels with the code rather than living only in a document:
+**The test exists but cannot pass yet** — skip it, with the reason in the skip:
 
 ```python
-@pytest.mark.quarantine("open-questions.md#q3")
+@pytest.mark.skip(reason="Economic Apply to Value column absent; defect or intended? See AB#12345")
+def test_apply_to_value_adds_to_applied_list(...):
 ```
 
-**The point is the loop, not the paperwork.** Three things should surface these questions at the moment
-someone can actually answer them:
+That is the whole mechanism. pytest reports it, it appears in the CI test report with the reason
+attached, and the reason lives beside the code it concerns. Nothing to maintain separately, and no
+second copy of the truth that can drift from the first.
 
-- **The regression run** reports open questions alongside drift, so a scheduled job's output reads
-  "2 drift changes, 3 tests quarantined pending answers" rather than silently carrying the gap.
-- **The PR description** carries them, so a reviewer sees them while looking at the code.
-- **The next run's drift check** finds the same disagreement and can point at the existing question
-  instead of raising it again as though it were new.
+**The test does not exist yet** — then there is nothing to skip, and this is a backlog item. Raise a
+work item in whatever tracker the team actually uses. A work item has an owner and a state; a list in a
+markdown file has neither, which is how it gets forgotten.
 
-An answered question is a one-line edit to that file plus removing a marker. An unanswered one stays
-visible. Either way nobody re-derives it from scratch, which is what happens when the only record was
-a conversation.
+Either way, name the decisions in the pull-request description and the traceability matrix, so a
+reviewer sees what is outstanding while looking at the change.
+
+**Do not build a questions file that tooling parses.** It looks like a system and behaves like a
+sticky note: a second store of state, hand-maintained, quietly disagreeing with the suite. This was
+tried and removed. The skip reason and the tracker are enough.
 
 ### 12. Land it as a pull request
 
@@ -471,7 +462,7 @@ step 7 precisely because you're looking at the real app: you notice something tr
 is selected, there are three rows, a field shows a particular value — and assert it. But "true on the
 day I looked" is not a requirement. Nobody asked for it, so nobody will recognise it when it fails, and
 on shared data it will fail without any defect existing. Before writing an assertion, ask which claim
-it serves. If it maps to nothing in the spec, it belongs in the open-questions list, not the test.
+it serves. If it maps to nothing in the spec, it does not belong in the test at all.
 
 Things you *discover* during verification are still valuable — auto-filled fields, absent toasts,
 disabled controls. Put them in the handoff as "assertions the narration never made, please confirm"
