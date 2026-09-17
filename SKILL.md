@@ -48,6 +48,61 @@ Same for the language and runner: read the target repo rather than asking.
 Ask at the checkpoints marked below rather than all at once. Questions asked after you've seen the
 footage are much better than questions asked before.
 
+### 1b. Check the project map before anything else
+
+**Always do this before writing or changing a test.** An application drifts, and drift found up front
+is a fact you can report; the same drift found halfway through writing a suite looks like your
+locators are wrong and sends you hunting a bug that doesn't exist.
+
+Look for `project-map.json` in the test repository.
+
+**No map yet — build one and commit it.** It becomes the baseline every later run compares against:
+
+```bash
+python scripts/build_project_map.py --base-url <dev-url> --routes routes.txt \
+  --out project-map.json [--channel chrome]
+```
+
+`routes.txt` is one path per line. Parameterised routes need real identifiers substituted in, and
+gated screens need a signed-in session — an unreachable route is recorded with its error, so fix
+those before committing or the first drift report is mostly noise.
+
+**Map exists — diff it:**
+
+```bash
+python scripts/check_drift.py --map project-map.json --tests <test-dir> [--channel chrome]
+```
+
+The report splits **breaking** drift (something disappeared that a committed test references, so
+those tests are stale) from **benign** drift (the app gained something; nothing references it).
+Exit code is non-zero only for breaking drift, which makes it usable as a scheduled job.
+
+#### What "update the tests" may and may not mean
+
+This is where care is needed, because two different situations look identical in a diff.
+
+**Mechanical drift — fix it.** The thing still exists and means the same, but is addressed
+differently: a grid was added so an index moved, a label was reworded without changing intent, a
+`data-testid` was renamed. Update the locator, note it in the commit, move on.
+
+**Semantic drift — do not fix it.** Something disappeared, a rule changed, an expected value is
+different. Rewriting the assertion to match current behaviour silently discards the thing the
+recording was evidence of, and can enshrine a regression as expected. Mark the test stale
+(`@pytest.mark.quarantine` or equivalent), keep it out of the gate, and raise it.
+
+When you cannot tell which it is, treat it as semantic. The cost of asking is a question; the cost of
+guessing wrong is a test that passes over a real defect.
+
+**Running unattended** — as a scheduled job, with nobody to ask — the same split applies, and it is
+what makes automation safe here: fix the mechanical, quarantine the semantic, report both, and never
+weaken an assertion to get to green. Regenerate and commit the map only once a human has confirmed
+the semantic changes were intended.
+
+The map records **structure, not data** — roles, names, tab and column identities, never row values
+or record names. That is deliberate: both test failures in this workflow's own history came from
+asserting data as though it were structure, and a map that encoded data would report drift on every
+ordinary day's activity until nobody read it.
+
 ### 2. Probe the media before trusting it
 
 The scripts need an ffmpeg binary. If one isn't on PATH, install the bundled wheel — no admin rights,
@@ -332,3 +387,5 @@ general by accumulating real measurements from real apps — not by anyone guess
 | `extract_frames.py` | auto-tuned scene detection + uniform coverage + gap report |
 | `grab_frame.py` | precise frames at native resolution, with crop and zoom — for reading detail |
 | `read_transcript.py` | `.vtt` / `.srt` / `.docx` / `.txt` → tagged utterances |
+| `build_project_map.py` | capture a structural baseline of the app, to commit alongside the tests |
+| `check_drift.py` | diff that baseline against the app now; names the tests it makes stale |
