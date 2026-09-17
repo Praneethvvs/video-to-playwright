@@ -342,6 +342,16 @@ worse than a failing test.
 **Claiming end-to-end.** If the tests deep-link past the setup steps, they're integration tests of a
 page. Say so. Overclaiming coverage is how people stop trusting a suite.
 
+**Producing an artifact that isn't the thing.** A deliverable named `walkthrough.mp4` must be a
+recording of the tests running. Do not satisfy that item by copying the input recording to the output
+path — observed in a real run, and it reads as "walkthrough produced" to anyone scanning the file
+list, however carefully the accompanying prose hedges. If you could not produce an artifact, don't
+create a file where it would have gone. A missing deliverable with a stated reason is honest; a
+plausible file in its place is not.
+
+The same applies to any blocked step. An empty project map, a suite of skipped tests, a scaffold
+script — all fine, provided they are named and reported as blocked rather than filed as done.
+
 ## Where this has been validated, and what to do when your stack differs
 
 Be honest with yourself about the evidence base. The **method** — video for sequence, source for

@@ -35,10 +35,35 @@ codex exec -C <workdir> -s workspace-write --skip-git-repo-check \
 | Flag | Why |
 |---|---|
 | `-C <dir>` | Working directory. Everything is resolved relative to this. |
-| `-s workspace-write` | Sandbox policy. Needed — the workflow writes frames, a spec, and test files. |
+| `-s <policy>` | Sandbox policy. **`workspace-write` is not enough — see below.** |
 | `--skip-git-repo-check` | Required if the working directory is not a git repo. |
 | `-o <file>` | Writes the final message to a file, so you can read the outcome after an unattended run. |
 | `--json` | Streams structured events, if you want to watch progress programmatically. |
+
+## The sandbox must allow a browser and the network
+
+`workspace-write` sounds sufficient — the workflow writes frames and test files — but it is not. This
+workflow's whole value is verifying locators against the running application, and that needs to launch
+a browser process and reach the app over the network. Under `workspace-write` the launch fails with
+`WinError 5: Access is denied` on Windows.
+
+Choose one of:
+
+```bash
+# sandboxed elsewhere (a container, a dedicated VM)
+codex exec -s danger-full-access ...
+
+# or grant what is actually needed
+codex exec -s workspace-write -c 'sandbox_permissions=["disk-full-read-access"]' ...
+```
+
+The failure is worth recognising because it does **not** look like a permissions error from the
+outside. A well-behaved run under the wrong sandbox produces a suite of tests that are all *skipped*,
+a project map with every route marked unreachable, and an exit code of 0. Nothing is wrong with the
+output — it is honest about being blocked — but "exit 0" invites you to read it as a pass.
+
+**So check two things before believing a run succeeded:** that the project map has reachable routes,
+and that the test run reports passes rather than skips.
 
 ## The trap: put the task in a file, not the argument
 

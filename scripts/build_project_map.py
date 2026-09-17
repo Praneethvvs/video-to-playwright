@@ -19,6 +19,14 @@ What the map is not:
   get verified against the running application before any test ships.
 * **Not a substitute for reading the app.** It is a comparison baseline, nothing more.
 
+**Known limitation: the structure/data line is not always decidable.** The volatile filter catches
+dates, currency, identifiers and long numbers, but a heading whose text *is* a record name reads as
+structure — a page titled with the customer's name, for instance. Renaming that record then shows up
+as drift. It lands in the benign column, because no test should be referencing a record name in the
+first place, so the report stays correct; it is just noisier than ideal. Deliberately not guessing at
+a cleverer heuristic here: wrongly discarding a genuinely structural heading would be the worse
+failure, and a known gap beats a silent misclassification.
+
 Usage:
     python build_project_map.py --base-url https://app-dev.example.com \\
         --routes routes.txt --out project-map.json [--channel chrome]
@@ -64,6 +72,43 @@ def is_volatile(name: str) -> bool:
     return bool(_VOLATILE.search(name or ""))
 
 
+# Lines in Playwright's aria snapshot look like:  - button "Add Adjustment"
+#                                                 - heading "Totals" [level=2]
+#                                                 - switch [checked]
+_ARIA_LINE = re.compile(r'^\s*-\s+([a-z]+)(?:\s+"([^"]*)")?')
+
+
+def parse_aria_snapshot(text: str) -> list[tuple[str, str]]:
+    """Pull (role, accessible name) pairs out of an aria snapshot."""
+    out = []
+    for line in (text or "").splitlines():
+        m = _ARIA_LINE.match(line)
+        if m:
+            out.append((m.group(1), (m.group(2) or "").strip()))
+    return out
+
+
+def settle_snapshot(page, attempts: int = 8, interval_ms: int = 1_000) -> tuple[str, bool]:
+    """Wait until the accessibility tree stops changing, then return it.
+
+    Two identical consecutive snapshots is a real readiness signal, unlike a fixed sleep. It also
+    handles the awkward middle ground where a page has loaded but a grid is still fetching: the tree
+    keeps changing, so we keep waiting.
+
+    Returns the snapshot and whether it actually settled, because a screen that never settles — a
+    polling dashboard, a spinner that never resolves — is worth recording as such rather than
+    silently treating the last sample as final.
+    """
+    previous = None
+    for _ in range(attempts):
+        current = page.locator("body").aria_snapshot()
+        if current == previous:
+            return current, True
+        previous = current
+        page.wait_for_timeout(interval_ms)
+    return previous or "", False
+
+
 def capture_route(page, base_url: str, route: str) -> dict:
     """Capture one route's addressable structure."""
     entry: dict = {"route": route}
@@ -72,42 +117,48 @@ def capture_route(page, base_url: str, route: str) -> dict:
     except Exception as exc:  # noqa: BLE001 - an unreachable route is data, not a crash
         entry["reachable"] = False
         entry["error"] = str(exc)[:200]
+        # Classify the failure, because the three kinds mean completely different things and only one
+        # of them is drift. A 404 is the application changing; an auth wall is a missing session; a
+        # driver or DNS failure is the harness, and should never be read as the app having changed.
+        msg = str(exc).lower()
+        if "err_name_not_resolved" in msg or "err_connection" in msg or "timeout" in msg:
+            entry["failure_class"] = "environment-unreachable"
+        elif "winerror" in msg or "executable doesn't exist" in msg or "denied" in msg:
+            entry["failure_class"] = "harness"
+        else:
+            entry["failure_class"] = "application"
         return entry
 
-    # Give client-rendered content a chance to arrive. A screen captured mid-render produces a map
-    # that reports missing controls, which reads as drift on the very next run.
-    page.wait_for_timeout(4_000)
+    # Wait for a measured readiness signal rather than a fixed sleep. A fixed wait is wrong in both
+    # directions: too short on a slow screen records missing controls (false drift next run), too long
+    # on a fast one wastes minutes per route. Settling on the accessibility tree itself is the right
+    # signal, because that is exactly what we are about to record.
+    snapshot, settled = settle_snapshot(page)
     entry["reachable"] = True
+    entry["settled"] = settled
     entry["title"] = page.title()
 
-    # Controls, by role and accessible name. Volatile names are counted but not recorded, so a screen
-    # full of data rows contributes one number rather than hundreds of churning entries.
+    # Controls come from Playwright's own aria snapshot, which is the authority this workflow already
+    # insists on everywhere else. Rolling a DOM query instead — `aria-label || textContent` over a
+    # hand-written role-to-selector map — was both inconsistent with that rule and less accurate: it
+    # misses implicit roles and computed names built through `aria-labelledby` or label association.
+    #
+    # Volatile names are counted but not recorded, so a screen of data rows contributes one number
+    # instead of hundreds of churning entries.
     controls: dict[str, list[str]] = {}
     volatile_counts: dict[str, int] = {}
-    for role in INTERESTING_ROLES:
-        names = page.evaluate(
-            """(role) => {
-                const out = [];
-                for (const el of document.querySelectorAll('[role="' + role + '"], ' + (
-                    {button:'button', link:'a[href]', textbox:'input,textarea',
-                     checkbox:'input[type=checkbox]', radio:'input[type=radio]',
-                     heading:'h1,h2,h3,h4,h5,h6'}[role] || ':not(*)'
-                ))) {
-                    const n = (el.getAttribute('aria-label')
-                        || el.textContent || '').trim().replace(/\\s+/g, ' ');
-                    if (n) out.push(n.slice(0, 120));
-                }
-                return [...new Set(out)];
-            }""",
-            role,
-        )
-        stable = sorted({n for n in names if not is_volatile(n)})
-        vol = len(names) - len(stable)
-        if stable:
-            controls[role] = stable
-        if vol:
-            volatile_counts[role] = vol
-    entry["controls"] = controls
+    for role, name in parse_aria_snapshot(snapshot):
+        if role not in INTERESTING_ROLES:
+            continue
+        if not name:
+            continue
+        if is_volatile(name):
+            volatile_counts[role] = volatile_counts.get(role, 0) + 1
+            continue
+        controls.setdefault(role, [])
+        if name not in controls[role]:
+            controls[role].append(name)
+    entry["controls"] = {r: sorted(v) for r, v in controls.items()}
     entry["volatile_name_counts"] = volatile_counts
 
     # data-testid attributes: the deliberate test surface, so worth tracking precisely. One
