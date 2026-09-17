@@ -175,6 +175,32 @@ than none. That is why the exit code is non-zero only for the breaking class.
 stale by design — it still describes the old accepted state. Recapture it from dev after the deployment
 and commit that, or the next PR inherits drift it did not cause.
 
+#### Writing tests for a feature that isn't deployed yet
+
+A common case, and it needs care in two places.
+
+**Verify locators against the local build.** If the feature only exists on a branch, that is the only
+place its controls exist, so local is the verification target. Nothing else changes about step 7.
+
+**Do not regenerate the map from that local build.** It is tempting, and it breaks the gate for
+everybody else. The map is the *shared* baseline: commit one taken from an unmerged branch and it
+declares that feature to be the accepted state, so every other developer's local build — which does
+not have it — reports those controls as **gone**, which is breaking, and their unrelated pull requests
+start failing. The map changes when something deploys, not when someone writes it.
+
+**Then mind the ordering.** The new tests reference controls that exist only locally, so they cannot
+pass against dev until the feature deploys. Because the tests usually live in a different repository
+from the UI, the two merge independently and nothing enforces the sequence. Pick one:
+
+- **Skip until live** — merge the tests with `@pytest.mark.skip(reason="awaiting <feature> on dev")`
+  and unskip in a follow-up once it is deployed. Simple, visible in the test report, and the safest
+  default.
+- **Hold the test PR** until the UI change has deployed, then merge and let it run for real.
+
+Either is fine; drifting into neither is not. Unskipped tests for undeployed features turn the suite
+red for reasons unrelated to whoever next touches it, and a suite that is red by default stops being
+read.
+
 One consequence to accept deliberately: a genuine, unresolved app-versus-recording disagreement will
 block every PR touching that area until somebody decides. That is the gate working, but it does mean
 the parked questions in step 11b need answering rather than accumulating.

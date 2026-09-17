@@ -18,6 +18,11 @@ What the map is not:
 * **Not a source of truth for writing tests.** It records what was true when captured. Locators still
   get verified against the running application before any test ships.
 * **Not a substitute for reading the app.** It is a comparison baseline, nothing more.
+* **Not a snapshot of your branch.** Capture it from the shared deployed environment, because it is
+  the baseline *everyone's* changes are judged against. A map taken from an unmerged local build
+  declares that branch's additions to be the accepted state, so every other developer's build reports
+  them as missing and their unrelated pull requests start failing. The map changes when something
+  deploys, not when someone writes it.
 
 **Known limitation: the structure/data line is not always decidable.** The volatile filter catches
 dates, currency, identifiers and long numbers, but a heading whose text *is* a record name reads as
