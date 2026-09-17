@@ -29,24 +29,29 @@ Ask about **intent, expectations, provenance, and priorities**. Those live only 
 
 ## Checkpoint 0 — before you start
 
-Three things genuinely block progress:
+Only two things genuinely block progress:
 
-1. **The video path**, and the transcript if one exists.
-2. **A URL to test against.** Also worth asking: is it shared with other people, and is it acceptable
-   for tests to create and delete data there? That single answer determines whether the suite can be
-   written at all in its useful form.
-3. **Where the tests should live** — an existing repo, a new one, alongside an existing suite.
+1. **The video path.**
+2. **The transcript.** A narrated recording is the standard this workflow assumes — narration is the
+   only source of expected results. If the probe says the track is silent, ask for a re-record with
+   narration before doing anything else.
 
-Two more worth asking here because they're cheap and change the shape of everything:
+One more worth asking up front, because it changes whether the suite can be written in its useful
+form at all:
 
-4. **Language and runner** — TypeScript `@playwright/test` or Python `pytest-playwright`. Default to
-   whatever the target repo already uses; the tests will be maintained by whoever maintains that code.
-5. **Is there an existing suite** to extend, coexist with, or leave alone?
+3. **Is the target environment shared, and may tests create and delete data there?** You cannot
+   determine this by looking, and the answer decides whether tests can seed their own fixtures or
+   must read whatever happens to be present.
 
-If a `.docx` transcript was supplied, **ask for the `.vtt` as well**. Teams exports both, and the
-`.docx` usually collapses to a single timestamp for the whole session while the `.vtt` has per-cue
-times. Without those, narration can only be aligned to frames by content, which is slow and
-approximate. This is the highest value-per-word question in the whole process.
+**Don't ask for the app URL up front.** The address bar is usually visible in the footage — read it
+from a frame and confirm your reading at Checkpoint 1. Same for language and runner: read the target
+repo, and default to whatever it already uses, because whoever maintains that code will maintain
+these tests. Asking for either is a round trip you can spend on something only a person knows.
+
+If a `.docx` transcript was supplied, ask for the `.vtt` as well. Teams exports both; the `.docx`
+usually collapses to a single timestamp for the whole session while the `.vtt` has per-cue times.
+Without those, narration can only be aligned to frames by content, which is slow and approximate.
+This is the highest value-per-word question in the whole process.
 
 ---
 

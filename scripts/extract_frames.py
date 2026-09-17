@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -83,8 +84,15 @@ def extract(video: Path, out_dir: Path, target: int, uniform_every: int, width: 
     out_dir.mkdir(parents=True, exist_ok=True)
     scene_dir = out_dir / "scene"
     uni_dir = out_dir / "uniform"
-    scene_dir.mkdir(exist_ok=True)
-    uni_dir.mkdir(exist_ok=True)
+
+    # Clear before writing. These directories are pure derived output, and the index is built by
+    # zipping globbed filenames against freshly captured timestamps — so a single stale frame from an
+    # earlier run with a different video or threshold silently shifts every timestamp after it, and
+    # the resulting frames.json looks perfectly valid while being wrong.
+    for d in (scene_dir, uni_dir):
+        if d.exists():
+            shutil.rmtree(d)
+        d.mkdir(parents=True)
 
     # Native resolution by default — see --width. Downscaling defeats the purpose of reading UI text.
     scale = f",scale={width}:-1" if width else ""
@@ -110,6 +118,21 @@ def extract(video: Path, out_dir: Path, target: int, uniform_every: int, width: 
 
     total = duration_seconds(video)
 
+    # Always capture the final moment. Uniform sampling lands on multiples of the interval, so the
+    # tail is routinely uncovered — and the tail is exactly where a long-running job finishes. This
+    # skill warns about that gap, so the tooling should not create it.
+    tail_t = None
+    if total and total > 1:
+        tail_t = round(total - 0.5, 2)
+        tail = uni_dir / "uniform_end.png"
+        args = ["-ss", str(tail_t), "-i", str(video)]
+        if scale:
+            args += ["-vf", scale.lstrip(",")]
+        args += ["-frames:v", "1", "-y", str(tail)]
+        run(args)
+        if tail.exists():
+            uni_files = [f for f in uni_files if f.name != "uniform_end.png"] + [tail]
+
     index = {
         "video": str(video),
         "duration_seconds": round(total, 1) if total else None,
@@ -120,7 +143,10 @@ def extract(video: Path, out_dir: Path, target: int, uniform_every: int, width: 
             for f, t in zip(scene_files, times)
         ],
         "uniform_frames": [
-            {"file": f"uniform/{f.name}", "t": i * uniform_every}
+            {
+                "file": f"uniform/{f.name}",
+                "t": tail_t if f.name == "uniform_end.png" else i * uniform_every,
+            }
             for i, f in enumerate(uni_files)
         ],
         "uniform_interval_seconds": uniform_every,

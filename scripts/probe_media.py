@@ -5,12 +5,17 @@ assume:
 
 * **Resolution and bitrate** — a heavily compressed capture of a dense UI is unreadable, and no
   amount of frame extraction fixes it.
-* **Whether the audio actually contains speech** — recordings routinely ship with a silent track.
+* **Whether the audio track carries any activity** — recordings routinely ship with a silent track.
   Discovering that after building a plan around "the narration will tell us" costs real time, because
   without narration every assertion has to come from a human review instead.
 
+This is an **audio-activity heuristic, not speech detection**. It measures loudness and counts
+stretches above a noise floor, so it cannot distinguish narration from a UI chime, music, or a noisy
+keyboard. Read `SILENT` as reliable — nothing is there — and `NARRATED` as "worth listening to, and
+worth asking for the transcript", not as confirmation that anyone spoke.
+
 Usage:
-    python probe_media.py <video> [--speech-threshold -45]
+    python probe_media.py <video> [--noise-floor -45]
 """
 
 from __future__ import annotations
@@ -73,16 +78,28 @@ def probe(path: Path, speech_threshold_db: float) -> dict:
         )
         gaps = len(re.findall(r"silence_end", sil))
         out["audio"]["non_silent_segments"] = gaps
+        out["audio"]["noise_floor_db"] = speech_threshold_db
 
+        # The peak test runs first and overrides the segment count, because a track can register a
+        # segment boundary while still being inaudible. Saying so explicitly avoids the confusing
+        # combination of "1 non-silent segment" and a SILENT verdict.
         peak_db = out["audio"]["max_volume_db"]
         if peak_db is None or peak_db < -80:
-            verdict = "SILENT — no narration. Every assertion must come from human review."
+            verdict = (
+                f"SILENT — peak {peak_db} dB is inaudible, so the {gaps} detected segment(s) are "
+                "artefacts. No narration; every expected result must come from a human."
+            )
         elif gaps <= 2:
             verdict = (
-                f"NEARLY SILENT — only {gaps} non-silent segment(s). Likely UI sounds, not narration."
+                f"NEARLY SILENT — {gaps} stretch(es) above {speech_threshold_db} dB. "
+                "Usually a UI chime rather than narration; listen before relying on it."
             )
         else:
-            verdict = f"NARRATED — {gaps} speech segments. Get the transcript."
+            verdict = (
+                f"AUDIO PRESENT — {gaps} stretches above {speech_threshold_db} dB. "
+                "Likely narration, but this is a loudness heuristic, not speech detection. "
+                "Listen to a sample, and ask for the transcript."
+            )
         out["audio"]["verdict"] = verdict
 
     warnings = []
@@ -107,7 +124,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("video")
     ap.add_argument(
+        "--noise-floor",
         "--speech-threshold",
+        dest="speech_threshold",
         type=float,
         default=-45.0,
         help="dB floor below which audio counts as silence (default: -45)",

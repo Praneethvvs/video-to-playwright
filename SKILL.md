@@ -36,12 +36,17 @@ skill is the verify-and-fix loop, not the initial generation. Budget for it.
 Read `references/clarification-loop.md` — it lists what you need, when to ask, and how to keep from
 drip-feeding questions.
 
-Minimum to start: the video path, the app URL to test against, and where the tests should live.
-Ask for a `.vtt` transcript specifically if only a `.docx` was given — Teams `.docx` exports usually
-collapse to a single timestamp, while `.vtt` has per-cue times that let you align narration to frames.
+**Only two things genuinely block starting:** the video path, and a narrated transcript. Ask for the
+`.vtt` specifically if only a `.docx` was given — Teams `.docx` exports usually collapse to a single
+timestamp, while `.vtt` has per-cue times that let you align narration to frames.
 
-Ask, don't assume, and ask at the checkpoints marked below rather than all at once. Questions asked
-after you've seen the footage are much better than questions asked before.
+Everything else is better asked *after* watching. In particular, don't open with "what's the app
+URL?" — the address bar is usually visible in the footage, so read it from a frame and confirm your
+reading later. Recovering it yourself is faster than a round trip, and it demonstrates you watched.
+Same for the language and runner: read the target repo rather than asking.
+
+Ask at the checkpoints marked below rather than all at once. Questions asked after you've seen the
+footage are much better than questions asked before.
 
 ### 2. Probe the media before trusting it
 
@@ -53,12 +58,25 @@ pip install imageio-ffmpeg
 python scripts/probe_media.py <video>
 ```
 
-Reports duration, resolution, bitrate, and — importantly — whether the audio track actually contains
-speech. Screen recordings frequently ship with a silent or near-silent track, and discovering that
-after you've built a plan around "the narration will tell us" is expensive.
+Reports duration, resolution, bitrate, and whether the audio track carries any activity. Note the
+limit: it measures loudness, not speech, so a `NARRATED` verdict means "worth listening to" rather
+than "someone definitely spoke". `SILENT` is the reliable direction.
 
-If there is no narration, say so plainly and early: every assertion will have to come from a human
-review, which roughly doubles the effort. That's a schedule fact the requester needs.
+**Treat a silent recording as a broken input, not a variant to plan around.** A narrated recording is
+the standard this workflow is built on, because narration is the only source of expected results.
+Going ahead without it means recovering every assertion through conversation, which roughly doubles
+the effort and produces a weaker spec.
+
+So if the probe says silent, report it immediately and ask for a re-record with narration. That is
+usually minutes of someone's time and saves hours of yours.
+
+Do run the probe even when narration is promised — a flat battery on a headset looks identical to a
+successful recording until you measure it. One real case: a 192 kb/s audio track that looked properly
+narrated turned out to hold a single half-second chime.
+
+If a re-record genuinely isn't available, the fallback is in
+`references/silent-recordings.md`. Read it only in that case; it is a degraded path, not the
+main one.
 
 ### 3. Extract frames
 
@@ -103,11 +121,6 @@ python scripts/read_transcript.py <transcript> --classify
 
 Handles `.vtt`, `.srt`, `.docx` and `.txt`, returning ordered utterances with timestamps where
 available, tagged as likely preconditions / expectations / rules.
-
-**If there is no narration** (step 2 told you), skip the command but not the thinking. The four
-categories below are still the right skeleton for the spec — you simply fill *expectations* and
-*business rules* from the human review at step 5's checkpoint instead of from the artifact. Say so
-explicitly in the spec: a reader needs to know an assertion came from a person, not the footage.
 
 Mine it for four things, and keep them separate:
 - **Prerequisites** — state that existed before recording started ("you have a client created…")
@@ -229,15 +242,12 @@ unreadable.
 List every claim and mark it automated / partial / blocked / not built, with a count. "8 of 21 narrated
 claims are automated" is an honest, useful handoff. "Tests written ✅" is not.
 
-Pick the denominator from what you actually had:
-- **Narrated recording** → claims spoken in the transcript. The best denominator, because the reviewer
-  recognises their own words.
-- **Silent recording** → distinct observable state changes in the footage: navigations, submissions,
-  and every before/after pair you can point at two frames for. Say how you counted, so the number
-  means something.
+**The denominator is the claims spoken in the transcript.** That is the right unit because the
+reviewer recognises their own words and can argue with the count. (Silent footage needs a different
+rule; `references/silent-recordings.md` has one.)
 
-Either way, split the count by provenance — derived from the artifact versus confirmed by a human —
-because those carry very different confidence and a reader deserves to know which is which.
+Split the count by provenance — derived from the recording versus confirmed by a human — because
+those carry very different confidence and a reader deserves to know which is which.
 
 Include the assertions your tests make that the narration never mentioned — those are discoveries
 from verification, and if any is wrong behaviour, the test is wrong.
@@ -308,6 +318,7 @@ general by accumulating real measurements from real apps — not by anyone guess
 | `references/gotchas-web-frameworks.md` | Before writing any locator |
 | `references/verification-loop.md` | During step 9, when failures aren't obvious |
 | `references/recording-verification-video.md` | At step 10 |
+| `references/silent-recordings.md` | Only if the recording has no narration and no re-record is possible |
 
 `assets/` holds templates: `conftest.template.py`, `page_object.template.py`,
 `walkthrough.template.py`. Python/pytest, but the TypeScript shapes are direct translations.
