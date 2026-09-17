@@ -48,13 +48,38 @@ Same for the language and runner: read the target repo rather than asking.
 Ask at the checkpoints marked below rather than all at once. Questions asked after you've seen the
 footage are much better than questions asked before.
 
-### 1b. Check the project map before anything else
+### 1b. Get the two repositories
+
+This workflow normally spans **two** repositories, and they have different rules:
+
+| Repository | Role | You may |
+|---|---|---|
+| The application repo | where the UI source lives | **read only** — never modify it |
+| The test repo | where tests, the project map and fixtures live | read and write; changes land by pull request |
+
+Clone both. You need the app source for the locator vocabulary (step 6), and you need the test repo
+before you can check for a project map — the map is test infrastructure and lives there, version
+controlled beside the tests it describes.
+
+Ask for both URLs if you were given only one. Along with the dev URL, that is the input set:
+
+```
+app repo   + test repo   + dev URL   + recording   + transcript
+```
+
+**Match the test repo's existing conventions.** Read it before writing anything: its language and
+runner, its directory layout, how it names tests, whether page objects already exist. The templates in
+`assets/` are a starting point for an empty repo, not a house style to impose on one that already has
+opinions. Whoever maintains that repo will maintain these tests, and a suite that looks foreign gets
+rewritten or abandoned.
+
+### 1c. Check the project map
 
 **Always do this before writing or changing a test.** An application drifts, and drift found up front
 is a fact you can report; the same drift found halfway through writing a suite looks like your
 locators are wrong and sends you hunting a bug that doesn't exist.
 
-Look for `project-map.json` in the test repository.
+Look for `project-map.json` in the test repo you just cloned.
 
 **No map yet — build one and commit it.** It becomes the baseline every later run compares against:
 
@@ -306,6 +331,33 @@ those carry very different confidence and a reader deserves to know which is whi
 
 Include the assertions your tests make that the narration never mentioned — those are discoveries
 from verification, and if any is wrong behaviour, the test is wrong.
+
+### 12. Land it as a pull request
+
+Changes go to the test repo on a branch, never straight to its default branch.
+
+**Only open the PR once the suite is green.** The one rule applies here: a PR containing an unverified
+test is asking a reviewer to approve something nobody has run. If some tests are blocked, leave them
+out and say so — a PR of four working tests plus a stated gap is reviewable; one of seven where three
+are guesses is not.
+
+Commit:
+
+- the tests, page objects and fixtures
+- `project-map.json` — the baseline the next run diffs against
+- the plain-language spec, so a non-engineer can see what is covered
+- any test fixture files the flow consumes, such as an uploaded spreadsheet
+
+Do **not** commit: the walkthrough video (binary, megabytes, and it belongs with the PR rather than in
+history), traces, screenshots, `node_modules`, a venv, or captured auth state. Check the repo's
+`.gitignore` covers these and add them if not.
+
+The PR description is the handoff: the traceability matrix, the open questions, the instrumentation
+backlog, and a link to or note about where the walkthrough video is. That way the review and the
+evidence live in the same place.
+
+Say plainly in the description that the walkthrough video is the artifact for the tester to check, and
+that their sign-off is what promotes the open questions into real assertions.
 
 ## What good output looks like
 

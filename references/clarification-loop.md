@@ -29,19 +29,22 @@ Ask about **intent, expectations, provenance, and priorities**. Those live only 
 
 ## Checkpoint 0 — before you start
 
-Only two things genuinely block progress:
+These genuinely block progress, and none of them can be worked out by looking:
 
 1. **The video path.**
 2. **The transcript.** A narrated recording is the standard this workflow assumes — narration is the
    only source of expected results. If the probe says the track is silent, ask for a re-record with
    narration before doing anything else.
+3. **The test repo**, where the tests and the project map live and where a PR will land.
+4. **The application repo**, read-only, for the locator vocabulary.
+5. **The dev URL** to verify against — *unless* it is readable in the recording's address bar, in
+   which case read it and confirm your reading later rather than spending a question on it.
+6. **Is the environment shared, and may tests create and delete data there?** This decides whether
+   tests can seed their own fixtures or must read whatever happens to be present — which shapes the
+   whole suite, so it is worth a question.
 
-One more worth asking up front, because it changes whether the suite can be written in its useful
-form at all:
-
-3. **Is the target environment shared, and may tests create and delete data there?** You cannot
-   determine this by looking, and the answer decides whether tests can seed their own fixtures or
-   must read whatever happens to be present.
+If you were handed one repo and not the other, ask. The two have different rules: the app repo is read
+only, the test repo is where you commit.
 
 **Don't ask for the app URL up front.** The address bar is usually visible in the footage — read it
 from a frame and confirm your reading at Checkpoint 1. Same for language and runner: read the target
