@@ -81,7 +81,8 @@ locators are wrong and sends you hunting a bug that doesn't exist.
 
 Look for `project-map.json` in the test repo you just cloned.
 
-**No map yet — build one and commit it.** It becomes the baseline every later run compares against:
+**No map yet — build one and commit it.** Capture it from the **dev deployment**, because the map
+records the accepted state of the UI, which is what later changes are judged against:
 
 ```bash
 python scripts/build_project_map.py --base-url <dev-url> --routes routes.txt \
@@ -150,17 +151,29 @@ knows what the change was for, and they are the cheapest person to update the af
 cheaper than someone discovering it during a release. The report names the stale files, so the fix is
 a known edit rather than an investigation.
 
-Two things make this workable rather than resented:
+The two URLs are *meant* to differ, and it is worth being clear about why:
 
-**Compare like with like.** Capture the baseline from the same kind of environment you gate on. A map
-taken from a shared deployment and diffed against a local build differs for reasons that have nothing
-to do with anyone's changes — runtime config, seed data, feature flags — and those land in the breaking
-column. The script warns when the two URLs differ, but the real fix is capturing the baseline locally
-if the gate runs locally.
+| | Captured from | Represents |
+|---|---|---|
+| The committed map | the shared dev deployment | the **accepted** state of the UI |
+| The pre-PR check | a local build of the branch | the **proposed** state |
+
+The diff between those two is precisely the question a pull-request gate should answer: what does this
+change break?
+
+**What must match is the backend, not the URL.** Structure can depend on data — a grid renders columns
+for the data it receives — so a local build pointed at mocks, or at a different API, will differ for
+reasons that have nothing to do with the branch, and those differences land in the breaking column.
+Before relying on the gate, confirm the build under test talks to the same backend the baseline did and
+has any mock-API flag switched off.
 
 **Benign drift must not fail.** Adding a tab or a column is normal work and blocks nothing. If the gate
 fires on ordinary additions it will be switched off within a fortnight, and a disabled gate is worse
 than none. That is why the exit code is non-zero only for the breaking class.
+
+**Regenerate the map when a change is accepted.** Once a PR's UI change is agreed and merged, the map is
+stale by design — it still describes the old accepted state. Recapture it from dev after the deployment
+and commit that, or the next PR inherits drift it did not cause.
 
 One consequence to accept deliberately: a genuine, unresolved app-versus-recording disagreement will
 block every PR touching that area until somebody decides. That is the gate working, but it does mean

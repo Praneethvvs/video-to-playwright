@@ -232,15 +232,20 @@ def main() -> int:
         base_url_override=args.base_url,
     )
 
-    # Compare like with like. A baseline captured against a shared dev deployment and diffed against a
-    # local build will differ for reasons that have nothing to do with anyone's changes: different
-    # runtime config, different seed data, feature flags. Those land in the breaking column and make a
-    # blocking gate look broken, which is how a blocking gate gets switched off.
+    # Comparing across URLs is the normal case, not a mistake: the baseline is the accepted state of
+    # the UI (usually a shared dev deployment) and the check runs against the proposed state (a local
+    # build of the branch). The diff between them is exactly what a pull-request gate wants.
+    #
+    # What must match is the **backend**, not the URL. Structure can depend on data — a grid renders
+    # columns for the data it receives — so a local build pointed at mocks or a different API will
+    # differ for reasons that have nothing to do with the branch, and those differences land in the
+    # breaking column.
     if stored.get("base_url") and fresh.get("base_url") and stored["base_url"] != fresh["base_url"]:
-        print(f"WARNING  the baseline was captured against {stored['base_url']}")
-        print(f"         and this check ran against   {fresh['base_url']}")
-        print("         Differences in runtime config or seed data between the two will appear as")
-        print("         drift. Capture the baseline from the same kind of environment you gate on.\n")
+        print(f"Baseline: {stored['base_url']}")
+        print(f"Checking: {fresh['base_url']}")
+        print("Expected for a pull-request gate. Confirm the build under test talks to the same")
+        print("backend as the baseline did, and has mocks disabled — otherwise data differences")
+        print("will read as drift.\n")
 
     questions_path = (
         Path(args.questions) if args.questions else Path(args.tests).parent / "open-questions.md"
