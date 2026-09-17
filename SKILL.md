@@ -344,6 +344,44 @@ those carry very different confidence and a reader deserves to know which is whi
 Include the assertions your tests make that the narration never mentioned — those are discoveries
 from verification, and if any is wrong behaviour, the test is wrong.
 
+### 11b. Park open questions where they will be found again
+
+A question asked in a chat window is answered once and then lost. These questions are scoped to
+specific tests and they recur — every regression run rediscovers the same disagreement — so they need
+to live with the test, not in a conversation.
+
+Commit `open-questions.md` to the test repo. One entry per unanswered question:
+
+```markdown
+## Q3 — economic Apply to Value absent on new rows
+Claim:      29, 30 (see spec.md)
+Blocks:     test_apply_to_value_adds_to_applied_list  [quarantined]
+Observed:   A newly created economic indicator has no apply_to_value column and never
+            appears in the Map to Ledger option list, including after a full reload.
+Ruled out:  stale SPA cache; the Manage menu; the Applied Economic Indicators card.
+Asked:      2026-09-17
+Answer:     <blank until someone fills it in>
+```
+
+Then mark the test itself, so the reason travels with the code rather than living only in a document:
+
+```python
+@pytest.mark.quarantine("open-questions.md#q3")
+```
+
+**The point is the loop, not the paperwork.** Three things should surface these questions at the moment
+someone can actually answer them:
+
+- **The regression run** reports open questions alongside drift, so a scheduled job's output reads
+  "2 drift changes, 3 tests quarantined pending answers" rather than silently carrying the gap.
+- **The PR description** carries them, so a reviewer sees them while looking at the code.
+- **The next run's drift check** finds the same disagreement and can point at the existing question
+  instead of raising it again as though it were new.
+
+An answered question is a one-line edit to that file plus removing a marker. An unanswered one stays
+visible. Either way nobody re-derives it from scratch, which is what happens when the only record was
+a conversation.
+
 ### 12. Land it as a pull request
 
 Changes go to the test repo on a branch, never straight to its default branch.
