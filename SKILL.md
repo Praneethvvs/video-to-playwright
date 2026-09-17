@@ -135,6 +135,37 @@ what makes automation safe here: fix the mechanical, quarantine the semantic, re
 weaken an assertion to get to green. Regenerate and commit the map only once a human has confirmed
 the semantic changes were intended.
 
+#### As a blocking gate on the application's pull requests
+
+The strongest place for this check is the app repo's own pull-request build, against the **locally
+built UI from that branch** rather than a shared deployment:
+
+```bash
+python scripts/check_drift.py --map project-map.json --tests tests/ \
+  --base-url http://localhost:4300
+```
+
+Breaking drift fails the build. The reasoning is simply that whoever changed the UI is the person who
+knows what the change was for, and they are the cheapest person to update the affected tests — far
+cheaper than someone discovering it during a release. The report names the stale files, so the fix is
+a known edit rather than an investigation.
+
+Two things make this workable rather than resented:
+
+**Compare like with like.** Capture the baseline from the same kind of environment you gate on. A map
+taken from a shared deployment and diffed against a local build differs for reasons that have nothing
+to do with anyone's changes — runtime config, seed data, feature flags — and those land in the breaking
+column. The script warns when the two URLs differ, but the real fix is capturing the baseline locally
+if the gate runs locally.
+
+**Benign drift must not fail.** Adding a tab or a column is normal work and blocks nothing. If the gate
+fires on ordinary additions it will be switched off within a fortnight, and a disabled gate is worse
+than none. That is why the exit code is non-zero only for the breaking class.
+
+One consequence to accept deliberately: a genuine, unresolved app-versus-recording disagreement will
+block every PR touching that area until somebody decides. That is the gate working, but it does mean
+the parked questions in step 11b need answering rather than accumulating.
+
 The map records **structure, not data** — roles, names, tab and column identities, never row values
 or record names. That is deliberate: both test failures in this workflow's own history came from
 asserting data as though it were structure, and a map that encoded data would report drift on every

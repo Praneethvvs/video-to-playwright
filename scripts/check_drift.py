@@ -53,7 +53,8 @@ def content_fingerprint(m: dict) -> str:
     ).hexdigest()[:16]
 
 
-def capture_fresh(stored: dict, channel: str | None, script_dir: Path, map_path: Path) -> dict:
+def capture_fresh(stored: dict, channel: str | None, script_dir: Path, map_path: Path,
+                  base_url_override: str | None = None) -> dict:
     """Re-capture using the stored map's own base_url and route list, so the diff is apples to apples.
 
     Scratch files are written beside the committed map rather than into the current working directory.
@@ -68,7 +69,9 @@ def capture_fresh(stored: dict, channel: str | None, script_dir: Path, map_path:
     tmp_map = work / ".drift-fresh.json"
     cmd = [
         sys.executable, str(script_dir / "build_project_map.py"),
-        "--base-url", stored["base_url"],
+        # The gate usually runs against a locally built app, not the environment the baseline came
+        # from, so the URL has to be overridable while the route list stays fixed.
+        "--base-url", base_url_override or stored["base_url"],
         "--routes", str(tmp_routes),
         "--out", str(tmp_map),
     ]
@@ -211,6 +214,12 @@ def main() -> int:
     ap.add_argument("--tests", default="tests", help="test tree to search for stale references")
     ap.add_argument("--channel")
     ap.add_argument(
+        "--base-url",
+        help="check against this URL instead of the one in the map, e.g. a local build on a pull "
+        "request. Keep the environment class the same as the baseline's, or config differences "
+        "will read as drift.",
+    )
+    ap.add_argument(
         "--questions",
         help="path to open-questions.md (default: alongside the test tree's parent)",
     )
@@ -219,8 +228,19 @@ def main() -> int:
 
     stored = load(Path(args.map))
     fresh = load(Path(args.against)) if args.against else capture_fresh(
-        stored, args.channel, Path(__file__).parent, Path(args.map)
+        stored, args.channel, Path(__file__).parent, Path(args.map),
+        base_url_override=args.base_url,
     )
+
+    # Compare like with like. A baseline captured against a shared dev deployment and diffed against a
+    # local build will differ for reasons that have nothing to do with anyone's changes: different
+    # runtime config, different seed data, feature flags. Those land in the breaking column and make a
+    # blocking gate look broken, which is how a blocking gate gets switched off.
+    if stored.get("base_url") and fresh.get("base_url") and stored["base_url"] != fresh["base_url"]:
+        print(f"WARNING  the baseline was captured against {stored['base_url']}")
+        print(f"         and this check ran against   {fresh['base_url']}")
+        print("         Differences in runtime config or seed data between the two will appear as")
+        print("         drift. Capture the baseline from the same kind of environment you gate on.\n")
 
     questions_path = (
         Path(args.questions) if args.questions else Path(args.tests).parent / "open-questions.md"
