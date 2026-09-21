@@ -31,6 +31,7 @@ log = logging.getLogger("testboard.executor")
 KIND_PYTEST = "pytest"
 KIND_DRIFT = "check_drift"
 KIND_MAP = "build_map"
+KIND_GENERATE = "generate"
 
 JOB_LABELS = {KIND_DRIFT: "Drift check", KIND_MAP: "Recapture project map"}
 
@@ -54,6 +55,7 @@ class Executor:
         self._proc: asyncio.subprocess.Process | None = None
         self._current_run_id: int | None = None
         self._orphans_to_kill: list[tuple[int, float]] = []
+        self._agent = None
 
     # --- lifecycle -----------------------------------------------------------------------
     async def start(self) -> None:
@@ -128,6 +130,18 @@ class Executor:
         self._wake.set()
         return Enqueued(run_id)
 
+    def enqueue_generation(self, source_id: int, label: str, requested_by: str) -> Enqueued:
+        target = f"source:{source_id}"
+        existing = self.db.already_pending(KIND_GENERATE, target)
+        if existing:
+            return Enqueued(None, "that recording is already being worked on", existing["id"])
+        run_id = self.db.enqueue(
+            kind=KIND_GENERATE, target=target, label=label, destructive=False,
+            timeout_seconds=self.config.generation.timeout_seconds, requested_by=requested_by,
+        )
+        self._wake.set()
+        return Enqueued(run_id)
+
     async def cancel(self, run_id: int) -> bool:
         row = self.db.get_run(run_id)
         if not row or row["status"] not in ("queued", "running"):
@@ -137,8 +151,13 @@ class Executor:
             self.db.update_run(run_id, status="cancelled", error_reason="cancelled",
                                finished_at=utcnow(), message="cancelled before it started")
             return True
-        if self._current_run_id == run_id and self._proc:
-            await procs.kill_tree(self._proc)
+        if self._current_run_id == run_id:
+            # A generation run is an in-process agent, not a subprocess, so it is interrupted
+            # through the SDK rather than killed. Same button, same queue, different mechanism.
+            if self._agent is not None:
+                await self._agent.interrupt()
+            elif self._proc:
+                await procs.kill_tree(self._proc)
         return True
 
     def queue_position(self, run_id: int) -> int | None:
@@ -191,6 +210,10 @@ class Executor:
         run_dir.mkdir(parents=True, exist_ok=True)
         log_path = run_dir / "stdout.log"
 
+        if row["kind"] == KIND_GENERATE:
+            await self._execute_generation(row, run_dir, log_path)
+            return
+
         check = await preflight.before_run(self.config)
         if not check.ok:
             # Decided here, by a check testboard performed, rather than inferred from a traceback
@@ -233,6 +256,106 @@ class Executor:
             self._current_run_id = None
 
         await self._finalise(row, run_dir, proc.returncode, timed_out)
+
+    async def _execute_generation(self, row, run_dir: Path, log_path: Path) -> None:
+        """Drive the agent in-process, through the same queue everything else uses.
+
+        No subprocess, so no process group to kill and no pipe to scrape — but it still holds the
+        single worker slot, because a generation run reads and writes the same working tree a test
+        run does, and two of those at once is a merge conflict with extra steps.
+        """
+        from . import agent as agentmod
+
+        run_id = row["id"]
+        source_id = int(row["target"].split(":", 1)[1])
+        source = self.db.get_source(source_id)
+
+        available = agentmod.availability()
+        if not available.ok:
+            log_path.write_text(available.detail + "\n", encoding="utf-8")
+            self.db.update_run(run_id, status="error", error_reason="agent_unavailable",
+                               started_at=utcnow(), finished_at=utcnow(),
+                               message=available.detail)
+            return
+        if source is None:
+            self.db.update_run(run_id, status="error", error_reason="test_error",
+                               started_at=utcnow(), finished_at=utcnow(),
+                               message="that recording no longer exists")
+            return
+        if not source["transcript_text"]:
+            detail = ("This recording has no transcript. The video shows what was done; only the "
+                      "narration says why, and what was supposed to happen. Upload the .vtt "
+                      "before generating.")
+            log_path.write_text(detail + "\n", encoding="utf-8")
+            self.db.update_run(run_id, status="error", error_reason="agent_unavailable",
+                               started_at=utcnow(), finished_at=utcnow(), message=detail)
+            return
+
+        self.bus.open(run_id, log_path)
+        self._current_run_id = run_id
+        self.db.update_run(run_id, status="running", started_at=utcnow())
+
+        handle = log_path.open("w", encoding="utf-8", errors="replace", newline="\n")
+
+        def emit(line: str) -> None:
+            handle.write(line + "\n")
+            handle.flush()
+            self.bus.publish(run_id, line)
+
+        cfg = self.config
+        video = (cfg.state_dir / source["video_path"]) if source["video_path"] else None
+        prompt = agentmod.PROMPT.format(
+            video=video or "(no video was uploaded — work from the transcript)",
+            transcript=source["transcript_name"] or "(inline)",
+            base_url=cfg.environment.base_url() or f"${cfg.environment.base_url_env}",
+            test_dir=", ".join(cfg.runner.test_paths),
+            transcript_text=source["transcript_text"][:400_000],
+        )
+
+        self._agent = agentmod.CodexAgent(
+            repo_root=cfg.repo_root,
+            skill_path=cfg.generation.skill_path(cfg.repo_root),
+            model=cfg.generation.model,
+            sandbox=cfg.generation.sandbox,
+            env=cfg.environment.subprocess_env(),
+            state_dir=cfg.state_dir,
+        )
+
+        try:
+            result = await asyncio.wait_for(
+                self._agent.run(prompt=prompt, emit=emit),
+                timeout=row["timeout_seconds"],
+            )
+            fields = {
+                "finished_at": utcnow(),
+                "status": "passed" if result.ok else "failed",
+                "error_reason": None if result.ok else "agent_failed",
+                "message": (result.final_response or "")[:4000] or result.error or result.status,
+                "exit_code": 0 if result.ok else 1,
+            }
+        except asyncio.TimeoutError:
+            await self._agent.interrupt()
+            fields = {"finished_at": utcnow(), "status": "timeout", "error_reason": "timeout",
+                      "message": f"the agent was still working after {row['timeout_seconds']}s"}
+        except Exception as exc:                       # noqa: BLE001
+            log.exception("generation run %s failed", run_id)
+            emit(f"ERROR: {type(exc).__name__}: {exc}")
+            fields = {"finished_at": utcnow(), "status": "error", "error_reason": "agent_failed",
+                      "message": f"{type(exc).__name__}: {exc}"}
+        finally:
+            handle.close()
+            self.bus.finish(run_id)
+            self._agent = None
+            self._current_run_id = None
+
+        if self.db.get_run(run_id)["cancel_requested"]:
+            fields.update(status="cancelled", error_reason="cancelled", message="cancelled")
+        self.db.update_run(run_id, **fields)
+
+        # The agent has written into the working tree. Whatever it added is only real once the
+        # tests are collected again, so refresh rather than leaving a stale list on screen.
+        from . import inventory
+        await inventory.refresh(self.config, self.db)
 
     def _command(self, row, run_dir: Path) -> tuple[list[str], dict[str, str]]:
         cfg = self.config

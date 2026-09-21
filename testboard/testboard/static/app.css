@@ -373,3 +373,19 @@ ul.bare li { padding: 2px 0; }
 }
 
 time.t { border-bottom: 1px dotted var(--line); cursor: help; }
+
+/* ── dropzone ───────────────────────────────────────────────────────────────────────────── */
+.dropzone {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  background: var(--surface); border: 2px dashed var(--line); border-radius: var(--r-card);
+  padding: 40px 24px; text-align: center; cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, transform .12s ease;
+}
+.dropzone:hover { border-color: var(--muted); }
+.dropzone.over { border-color: var(--ink); background: #fbfbfa; transform: scale(1.005); }
+.dropzone.compact { padding: 22px; }
+.dropzone input[type=file] { display: none; }
+.dz-main { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.dz-sub { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.dz-picked { font-size: 12px; color: var(--info); font-weight: 600; }
+.dz-picked:empty { display: none; }

@@ -18,7 +18,15 @@ FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
 WORKDIR /opt/testboard
 COPY pyproject.toml ./
 COPY testboard ./testboard
-RUN python -m pip install --no-cache-dir .
+# [codex] pulls the Codex SDK and its pinned CLI binary, so turning a recording into tests needs
+# nothing installed at runtime. Drop the extra if this deployment will never generate.
+RUN python -m pip install --no-cache-dir ".[codex]"
+
+# The skill travels in the image rather than being fetched at runtime, so the agent has the
+# workflow it is meant to follow even in a pod with no egress beyond the model API.
+#   docker build -f testboard/Dockerfile --build-context skill=. -t testboard:0.1.0 .
+COPY --from=skill . /opt/skills/video-to-playwright
+ENV TESTBOARD_SKILL_PATH=/opt/skills/video-to-playwright
 
 # testboard's own environment. The repository under test keeps its own virtualenv at
 # /repo/venv — they must not be the same one, or the web framework and the test suite start
@@ -26,6 +34,13 @@ RUN python -m pip install --no-cache-dir .
 ENV PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8 \
     PYTHONUTF8=1
+
+# Behind a TLS-intercepting proxy, mount the corporate root and point this at it. The Codex
+# runtime is Rust and verifies against its own compiled-in roots, so without it every model call
+# fails as "invalid peer certificate: UnknownIssuer" — which reads like a network fault and is
+# not one. On a laptop testboard exports the OS trust store itself; in a container there is no
+# OS store to export, so this is the seam.
+# ENV SSL_CERT_FILE=/etc/ssl/corporate/ca-bundle.pem
 
 WORKDIR /repo
 EXPOSE 8770

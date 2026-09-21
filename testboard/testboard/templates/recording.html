@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}{{ source['title'] }}{% endblock %}
+{% block body %}
+
+<div class="pagehead">
+  <div>
+    <h1>{{ source['title'] }}</h1>
+    <p>Uploaded {{ source['created_at'] | when }}{% if source['created_by'] %} by {{ source['created_by'] }}{% endif %}</p>
+  </div>
+  <div class="aside">
+    {% if source['transcript_text'] and agent.ok %}
+    <form method="post" action="/recordings/{{ source['id'] }}/generate" class="inline">
+      <button><svg><use href="#i-play"/></svg> Generate tests</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/recordings/{{ source['id'] }}/delete" class="inline">
+      <button class="icon" title="Delete this recording"
+              data-confirm="Delete “{{ source['title'] }}” and its files. This cannot be undone.">
+        <svg><use href="#i-stop"/></svg>
+      </button>
+    </form>
+  </div>
+</div>
+
+{% if not source['transcript_text'] %}
+<div class="banner is-warn">
+  <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>No transcript.</strong> The video shows what someone did; only the narration says what
+    was supposed to happen, and that is what becomes an assertion. Generation stays disabled until
+    a transcript is attached — upload the <code>.vtt</code> below.
+  </div>
+</div>
+{% elif not source['has_timestamps'] %}
+<div class="banner is-warn">
+  <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>No usable timestamps.</strong> Typical of a Teams <code>.docx</code> export, which
+    collapses the session into one block. The <code>.vtt</code> of the same meeting has per-cue
+    times, which is the difference between narration that can be aligned to the video and
+    narration that has to be matched by content.
+  </div>
+</div>
+{% endif %}
+
+{% if not agent.ok %}
+<div class="banner is-info">
+  <span class="badge sm blue"><svg><use href="#i-alert"/></svg></span>
+  <div><strong>Generation is unavailable.</strong> {{ agent.detail }}</div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="meta">
+    <div><span class="k">video</span><span class="v small">
+      {% if source['video_name'] %}{{ source['video_name'] }}<br>
+        <span class="muted">{{ (source['video_bytes'] / 1048576) | round(1) }} MB</span>
+      {% else %}<span class="muted">none</span>{% endif %}</span></div>
+    <div><span class="k">transcript</span><span class="v small">
+      {% if source['transcript_name'] %}{{ source['transcript_name'] }}<br>
+        <span class="muted">{{ cue_total }} cue(s)</span>
+      {% else %}<span class="muted">none</span>{% endif %}</span></div>
+    {% if source['video_duration'] %}
+    <div><span class="k">length</span><span class="v">{{ (source['video_duration'] / 60) | round(1) }} min</span></div>
+    {% endif %}
+    <div><span class="k">digest</span><span class="v mono tiny">{{ (source['video_sha256'] or '—')[:16] }}</span></div>
+  </div>
+</div>
+
+{% if source['video_path'] %}
+<h2>Recording</h2>
+<div class="card">
+  <video controls preload="metadata" style="width:100%; max-height:520px; border-radius:12px; background:#000"
+         src="/recordings/{{ source['id'] }}/video"></video>
+</div>
+{% endif %}
+
+<h2>Add a file</h2>
+<form method="post" action="/recordings/upload" enctype="multipart/form-data" id="uploader">
+  <input type="hidden" name="source_id" value="{{ source['id'] }}">
+  <label class="dropzone compact" id="dropzone">
+    <input type="file" name="files" multiple id="filepick"
+           accept=".mp4,.webm,.mov,.mkv,.m4v,.avi,.vtt,.srt,.docx,.txt,.md">
+    <span class="dz-main">Drop a file to attach it to this recording</span>
+    <span class="dz-picked" id="picked"></span>
+  </label>
+  <div class="toolbar" style="margin-top:10px">
+    <button id="uploadbtn" disabled>Upload</button>
+  </div>
+</form>
+
+{% if cues %}
+<h2>Transcript</h2>
+<div class="card flush">
+  <div class="rows">
+  {% for c in cues %}
+    <div class="row" style="padding-top:8px; padding-bottom:8px">
+      <div class="row-slot" style="width:92px">
+        <span class="mono tiny muted">{{ c['start'] or '' }}</span>
+      </div>
+      <div class="row-main">
+        {% if c['speaker'] %}<div class="row-sub"><strong>{{ c['speaker'] }}</strong></div>{% endif %}
+        <div style="font-size:13px; white-space:normal">{{ c['text'] }}</div>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+  {% if cue_total > cues | length %}
+  <div class="row"><div class="row-main muted small">
+    Showing {{ cues | length }} of {{ cue_total }} cues.
+  </div></div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if runs %}
+<h2>Generation runs</h2>
+<div class="card flush">
+  <div class="rows">
+  {% for r in runs %}
+    <div class="row">
+      <span class="badge sm {% if r['status'] == 'passed' %}mint{% elif r['status'] in ('running','queued') %}blue{% else %}rose{% endif %}">
+        <svg><use href="#i-{{ 'check' if r['status'] == 'passed' else 'play' }}"/></svg>
+      </span>
+      <div class="row-main">
+        <div class="row-name"><a class="linky" style="text-decoration:none;color:inherit" href="/runs/{{ r['id'] }}">Run #{{ r['id'] }}</a></div>
+        <div class="row-sub">{{ r['requested_at'] | when }}{% if r['requested_by'] %} · {{ r['requested_by'] }}{% endif %}</div>
+      </div>
+      <div class="row-slot w-status"><span class="dot {{ r['status'] }}">{{ r['status'] }}</span></div>
+      <div class="row-actions">
+        <a class="btn icon" href="/runs/{{ r['id'] }}" title="Open"><svg><use href="#i-file"/></svg></a>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="banner is-info" style="margin-top:22px">
+  <span class="badge sm lilac"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>What generation will and will not do.</strong> It verifies every locator against
+    {{ base_url or base_url_env }} before committing it, and it leaves a hole open rather than
+    inventing an expected value the narrator never gave. What comes out still needs reading: the
+    one thing to check is that every assertion traces back to something the tester actually said
+    mattered.
+  </div>
+</div>
+
+{% endblock %}

@@ -64,6 +64,66 @@
   paintTimes();
   setInterval(paintTimes, 30000);
 
+  // --- drag and drop upload ----------------------------------------------------------------
+  // The <input type=file> stays the source of truth and the form posts normally. Dropping just
+  // fills the input, so the whole thing still works with drag-and-drop unavailable or JS off.
+  var zone = document.getElementById("dropzone");
+  if (zone) {
+    var picker = document.getElementById("filepick");
+    var picked = document.getElementById("picked");
+    var uploadButton = document.getElementById("uploadbtn");
+    var note = document.getElementById("uploadnote");
+
+    function describe() {
+      var files = picker.files;
+      if (!files || !files.length) {
+        picked.textContent = "";
+        uploadButton.disabled = true;
+        return;
+      }
+      var names = [];
+      var bytes = 0;
+      for (var i = 0; i < files.length; i++) {
+        names.push(files[i].name);
+        bytes += files[i].size;
+      }
+      picked.textContent = names.join(", ") + "  ·  " + (bytes / 1048576).toFixed(1) + " MB";
+      uploadButton.disabled = false;
+    }
+
+    picker.addEventListener("change", describe);
+
+    ["dragenter", "dragover"].forEach(function (name) {
+      zone.addEventListener(name, function (event) {
+        event.preventDefault();
+        zone.classList.add("over");
+      });
+    });
+    ["dragleave", "drop"].forEach(function (name) {
+      zone.addEventListener(name, function (event) {
+        event.preventDefault();
+        zone.classList.remove("over");
+      });
+    });
+    zone.addEventListener("drop", function (event) {
+      if (event.dataTransfer && event.dataTransfer.files.length) {
+        picker.files = event.dataTransfer.files;
+        describe();
+      }
+    });
+
+    var form = document.getElementById("uploader");
+    if (form) {
+      form.addEventListener("submit", function () {
+        // A screen recording takes a while to go up and the page gives no other sign, so say so
+        // rather than letting it look like nothing happened.
+        uploadButton.disabled = true;
+        uploadButton.textContent = "Uploading…";
+        if (note) note.textContent = "large recordings take a moment — do not close this tab";
+      });
+    }
+  }
+
   // --- live log ---------------------------------------------------------------------------
   var log = document.getElementById("log");
   if (!log) return;

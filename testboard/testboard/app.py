@@ -14,14 +14,15 @@ import logging
 import mimetypes
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Query, Request
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
                                RedirectResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
-from . import __version__, drift as driftmod, inventory, preflight, retention
+from . import (__version__, agent as agentmod, drift as driftmod, inventory, media,
+               preflight, retention)
 from .config import Config
 from .db import Database
 from .executor import KIND_DRIFT, KIND_MAP, KIND_PYTEST, Executor
@@ -89,6 +90,8 @@ def create_app(config: Config) -> FastAPI:
             "startup_checks": getattr(app.state, "startup_checks", []),
             "collect": database.get_meta("collect", {}),
             "test_total": (database.get_meta("collect", {}) or {}).get("count", 0),
+            "source_total": len(database.sources()),
+            "last_upload": database.get_meta("last_upload") or [],
         }
 
     def render(name: str, request: Request, **extra) -> HTMLResponse:
@@ -246,6 +249,104 @@ def create_app(config: Config) -> FastAPI:
     async def manual_sweep():
         retention.sweep(config, database)
         return RedirectResponse("/", status_code=303)
+
+    # --- recordings and transcripts ---------------------------------------------------------
+    @app.get("/recordings", response_class=HTMLResponse)
+    async def recordings_page(request: Request):
+        rows = database.sources()
+        runs = {}
+        for row in rows:
+            runs[row["id"]] = database.history(limit=5, target=f"source:{row['id']}")
+        return render("recordings.html", request, sources=rows, runs=runs,
+                      agent=agentmod.availability(),
+                      discovered=media.discover(config))
+
+    @app.get("/recordings/{source_id}", response_class=HTMLResponse)
+    async def recording_page(request: Request, source_id: int):
+        row = database.get_source(source_id)
+        if row is None:
+            return HTMLResponse("<h1>No such recording</h1>", status_code=404)
+        cues = json.loads(row["transcript_cues"]) if row["transcript_cues"] else []
+        return render("recording.html", request, source=row, cues=cues[:400],
+                      cue_total=len(cues),
+                      runs=database.history(limit=20, target=f"source:{source_id}"),
+                      agent=agentmod.availability())
+
+    @app.post("/recordings/upload")
+    async def upload(request: Request, files: list[UploadFile] = File(...),
+                     source_id: int | None = Form(None)):
+        messages, target = [], source_id
+        for upload_file in files:
+            try:
+                accepted = await media.accept(
+                    config, database, filename=upload_file.filename or "upload",
+                    stream=upload_file, uploaded_by=_who(request), source_id=target,
+                )
+                # A video and its transcript arriving together belong to one recording, so the
+                # first file decides the source and the rest attach to it.
+                target = accepted.source_id
+                messages.append(accepted.message)
+            except ValueError as exc:
+                messages.append(f"{upload_file.filename}: {exc}")
+            finally:
+                await upload_file.close()
+
+        database.set_meta("last_upload", messages)
+        if target:
+            return RedirectResponse(f"/recordings/{target}", status_code=303)
+        return RedirectResponse("/recordings", status_code=303)
+
+    @app.post("/recordings/import")
+    async def import_discovered(request: Request, path: str = Form(...)):
+        candidate = (config.repo_root / path).resolve()
+        if config.repo_root not in candidate.parents or not candidate.is_file():
+            return JSONResponse({"error": "not a file in this repository"}, status_code=400)
+
+        class _FileStream:
+            """Adapts a file on disk to the same async read() the upload path expects."""
+            def __init__(self, handle):
+                self._handle = handle
+
+            async def read(self, size: int = -1) -> bytes:
+                return self._handle.read(size)
+
+        with candidate.open("rb") as handle:
+            accepted = await media.accept(
+                config, database, filename=candidate.name, stream=_FileStream(handle),
+                uploaded_by=_who(request),
+            )
+        return RedirectResponse(f"/recordings/{accepted.source_id}", status_code=303)
+
+    @app.post("/recordings/{source_id}/generate")
+    async def generate(request: Request, source_id: int):
+        row = database.get_source(source_id)
+        if row is None:
+            return JSONResponse({"error": "no such recording"}, status_code=404)
+        result = executor.enqueue_generation(
+            source_id, f"Generate tests from “{row['title']}”", _who(request),
+        )
+        return RedirectResponse(f"/runs/{result.run_id or result.duplicate_of}", status_code=303)
+
+    @app.post("/recordings/{source_id}/delete")
+    async def delete_recording(source_id: int):
+        media.delete(config, database, source_id)
+        return RedirectResponse("/recordings", status_code=303)
+
+    @app.post("/recordings/{source_id}/rename")
+    async def rename_recording(source_id: int, title: str = Form(...)):
+        database.update_source(source_id, title=title[:120])
+        return RedirectResponse(f"/recordings/{source_id}", status_code=303)
+
+    @app.get("/recordings/{source_id}/video")
+    async def video(source_id: int):
+        row = database.get_source(source_id)
+        if row is None or not row["video_path"]:
+            return PlainTextResponse("no video for this recording", status_code=404)
+        path = config.state_dir / row["video_path"]
+        if not path.is_file():
+            return PlainTextResponse("the file is no longer on disk", status_code=404)
+        guessed = mimetypes.guess_type(path.name)[0] or "video/mp4"
+        return FileResponse(path, media_type=guessed)
 
     # --- streaming and files --------------------------------------------------------------
     @app.get("/runs/{run_id}/stream")
