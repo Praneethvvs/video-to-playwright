@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Recordings{% endblock %}
+{% block body %}
+
+<div class="pagehead">
+  <div>
+    <h1>Recordings</h1>
+    <p>A tester's screen capture and what they said while making it. The narration is the part that
+       becomes assertions.</p>
+  </div>
+</div>
+
+{% for message in last_upload %}
+<div class="banner is-info">
+  <span class="badge sm blue"><svg><use href="#i-check"/></svg></span>
+  <div>{{ message }}</div>
+</div>
+{% endfor %}
+
+{% if not agent.ok %}
+<div class="banner is-warn">
+  <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+  <div><strong>Generation is unavailable.</strong> {{ agent.detail }}
+    <br>Uploads still work — this only affects turning one into tests.</div>
+</div>
+{% endif %}
+
+<form method="post" action="/recordings/upload" enctype="multipart/form-data" id="uploader">
+  <label class="dropzone" id="dropzone">
+    <input type="file" name="files" multiple id="filepick"
+           accept=".mp4,.webm,.mov,.mkv,.m4v,.avi,.vtt,.srt,.docx,.txt,.md">
+    <span class="badge lilac"><svg><use href="#i-dl"/></svg></span>
+    <span class="dz-main">Drop a recording or transcript here</span>
+    <span class="dz-sub">
+      or click to choose · mp4, webm, mov, mkv · vtt, srt, docx, txt<br>
+      Drop both together and they are kept as one recording.
+    </span>
+    <span class="dz-picked" id="picked"></span>
+  </label>
+  <div class="toolbar" style="margin-top:12px">
+    <button id="uploadbtn" disabled><svg><use href="#i-dl"/></svg> Upload</button>
+    <span class="muted tiny" id="uploadnote"></span>
+  </div>
+</form>
+
+{% if discovered %}
+<h2>Already in the repository</h2>
+<p class="muted small">Found next to the code and not registered here yet.</p>
+<div class="card flush">
+  <div class="rows">
+  {% for path in discovered %}
+    <div class="row">
+      <span class="badge sm"><svg><use href="#i-file"/></svg></span>
+      <div class="row-main"><div class="row-name mono">{{ path.relative_to(path.anchor) if path.is_absolute() else path }}</div></div>
+      <div class="row-actions">
+        <form method="post" action="/recordings/import" class="inline">
+          <input type="hidden" name="path" value="{{ path.name }}">
+          <button class="quiet sm">Adopt</button>
+        </form>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<h2>Uploaded</h2>
+<div class="card flush">
+  <div class="rows">
+  {% for s in sources %}
+    <div class="row">
+      <span class="badge sm {% if s['transcript_text'] and s['video_path'] %}mint{% elif s['transcript_text'] %}blue{% else %}peach{% endif %}">
+        <svg><use href="#i-{{ 'check' if s['transcript_text'] and s['video_path'] else 'file' }}"/></svg>
+      </span>
+      <div class="row-main">
+        <div class="row-name">
+          <a class="linky" style="text-decoration:none;color:inherit" href="/recordings/{{ s['id'] }}">{{ s['title'] }}</a>
+        </div>
+        <div class="row-sub">
+          {% if s['video_name'] %}{{ s['video_name'] }} ({{ (s['video_bytes'] / 1048576) | round(1) }} MB){% else %}<span class="muted">no video</span>{% endif %}
+          ·
+          {% if s['transcript_name'] %}{{ s['transcript_name'] }}{% if not s['has_timestamps'] %}
+            <span class="chip is-warn">no timestamps</span>{% endif %}
+          {% else %}<span class="chip is-warn">no transcript</span>{% endif %}
+          · {{ s['created_at'] | when }}
+        </div>
+      </div>
+      <div class="row-slot w-status">
+        {% set r = runs.get(s['id']) %}
+        {% if r %}<span class="dot {{ r[0]['status'] }}">{{ r[0]['status'] }}</span>
+        {% else %}<span class="dot unknown">not generated</span>{% endif %}
+      </div>
+      <div class="row-actions">
+        <a class="btn icon" href="/recordings/{{ s['id'] }}" title="Open"><svg><use href="#i-file"/></svg></a>
+        {% if s['transcript_text'] and agent.ok %}
+        <form method="post" action="/recordings/{{ s['id'] }}/generate" class="inline">
+          <button class="quiet sm"><svg><use href="#i-play"/></svg> Generate tests</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+
+  {% if not sources %}
+  <div class="empty">
+    <span class="badge lilac"><svg><use href="#i-file"/></svg></span>
+    <div><strong>Nothing uploaded yet.</strong></div>
+    <div class="small">Drop a recording and its transcript above.</div>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

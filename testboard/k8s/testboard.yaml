@@ -81,6 +81,19 @@ spec:
             # here. In-cluster, point it at the service, not the public hostname.
             - name: ORCA_BASE_URL
               value: "http://orca-complex-properties-ui.<namespace>.svc.cluster.local"  # DECIDE
+            # The credential for turning recordings into tests. This is the whole reason the
+            # agent runs in-process through the SDK rather than as `codex exec`: the CLI wants an
+            # interactive login or a seeded ~/.codex/auth.json, and neither belongs in an image.
+            # login_api_key() reads this at startup and nothing is written to disk.
+            - name: CODEX_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: testboard-codex          # kubectl create secret generic testboard-codex \
+                  key: api-key                   #   --from-literal=api-key=sk-...
+                  optional: true                 # absent = generation reports itself unavailable
+            # Uncomment with the volume below if the cluster sits behind TLS interception.
+            # - name: SSL_CERT_FILE
+            #   value: /etc/ssl/corporate/ca-bundle.pem
           resources:
             # A browser is memory-hungry and bursty. Too low a limit shows up as tests that fail
             # only in the cluster, which is an expensive thing to debug.

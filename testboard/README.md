@@ -34,6 +34,58 @@ It runs in **its own virtualenv** and invokes the repository's interpreter as a 
 one environment would mean adding a web framework to a test repo's dependency set and then keeping
 the two sets compatible forever.
 
+## Recordings, and generating tests from them
+
+Drop a screen recording and its transcript onto the Recordings page, or point testboard at files
+already sitting in the repo and adopt them. The transcript is parsed on upload — `.vtt`, `.srt`,
+`.docx` and `.txt`, with no third-party dependency — and the result says plainly whether it has
+per-cue timestamps, because a Teams `.docx` usually does not and that changes how well narration
+can be aligned to the video.
+
+**Where each piece is kept, and why they differ.** The transcript text goes into SQLite: it is
+small, it is what a generation run actually reads, and having it there means a run needs nothing
+from the filesystem. The video goes on disk with its digest recorded. Putting a 200 MB file in
+SQLite would bloat every backup and VACUUM of a database whose whole value is being small enough
+to keep forever, and nothing ever queries its bytes.
+
+Press **Generate tests** and an agent reads the transcript and writes tests, through the same
+queue, with the same live log and the same Cancel button as everything else.
+
+### Why the SDK and not `codex exec`
+
+Shelling out to the CLI works on a laptop and is the wrong shape for a cluster, for four reasons
+this project hit directly:
+
+| | |
+|---|---|
+| **Quoting** | A multi-line prompt as a shell argument gets split on whitespace: `error: unexpected argument 'a' found`. The documented workaround is writing the task to a Markdown file — a workaround for a problem that does not exist when the prompt is an object |
+| **Authentication** | The CLI wants an interactive login or a seeded `~/.codex/auth.json`. `login_api_key()` reads a key from a Secret at startup and writes nothing |
+| **Sandboxing** | `-s workspace-write` blocks the browser on Windows with `WinError 5`, and a blocked run gives all-skipped tests and **exit code 0** — failure that looks like success. Here it is a typed argument |
+| **Cancel and streaming** | A subprocess gives a pipe to scrape. `turn.stream()` gives typed events and `turn.interrupt()` gives a cancel the queue calls directly |
+
+`openai-codex` bundles its own pinned CLI binary, so there is nothing to install separately and
+nothing to keep in version step.
+
+**The skill travels with the request**, as a `SkillInput`. That was the open question — how a
+remote agent gets the video-to-playwright workflow without it being pre-installed in a home
+directory somewhere — and it has a first-class answer. In the image it lives at
+`TESTBOARD_SKILL_PATH`.
+
+Nothing else changes between a laptop and a pod:
+
+| | laptop | pod |
+|---|---|---|
+| credential | your existing `codex login` | `CODEX_API_KEY` from a Secret |
+| workspace | the checked-out repo | the repo the init container cloned |
+| the skill | found at `~/.claude/skills/` | baked into the image |
+| corporate TLS | the OS trust store, exported automatically | `SSL_CERT_FILE`, mounted |
+
+That last row is not incidental. The Codex runtime is Rust and verifies TLS against its own
+compiled-in roots, so behind an intercepting proxy every model call fails with
+`invalid peer certificate: UnknownIssuer`, which reads like a network fault and is not one. On
+Windows testboard exports the system trust store to a bundle and points the agent at it; in a
+container there is no OS store to export, so the bundle is mounted.
+
 ## What it will not do
 
 **It will not pretend to know something it does not.** A drift check that could not reach the

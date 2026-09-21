@@ -228,9 +228,21 @@ Check for `testboard.yaml` in the test repo. If it is missing, offer it; do not 
 unasked.
 
 ```bash
-python scripts/install_testboard.py --repo <test-repo>
+python scripts/install_testboard.py --repo <test-repo> [--with-codex]
 cd <test-repo> && .testboard/venv/Scripts/python.exe -m testboard     # bin/python on Linux
 ```
+
+**Look in its database before asking for a recording.** If testboard is already installed, the
+recordings and transcripts somebody uploaded are in `.testboard/testboard.db`, and the transcript
+text is in the `sources` table rather than on disk:
+
+```bash
+sqlite3 .testboard/testboard.db \
+  "SELECT id, title, video_name, transcript_name, has_timestamps FROM sources ORDER BY id DESC"
+```
+
+That is faster than asking for a file the team has already handed over, and it is the same text
+the Generate button feeds an agent. `--with-codex` adds the SDK so that button works at all.
 
 The installer infers `testboard.yaml` from what is actually in the repo — test paths from
 `testpaths`, environment variable names from `conftest.py`, marker names from the registered

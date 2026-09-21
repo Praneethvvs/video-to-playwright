@@ -70,6 +70,32 @@ CREATE TABLE IF NOT EXISTS test_results (
 );
 CREATE INDEX IF NOT EXISTS test_results_nodeid ON test_results(nodeid, run_id DESC);
 
+-- A recording session: the video a tester made, the transcript of what they said, or both.
+--
+-- The transcript text lives in this table. It is small, it is what the agent actually reads, and
+-- having it here means a generation job needs nothing from the filesystem. The video does NOT:
+-- it is tens or hundreds of megabytes, it would bloat every backup and VACUUM of this database,
+-- and nothing ever queries its bytes. It goes on disk under .testboard/media/ with its digest
+-- recorded here, which is also what makes the artifact-retention story apply to it unchanged.
+CREATE TABLE IF NOT EXISTS sources (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    title             TEXT    NOT NULL,
+    created_at        TEXT    NOT NULL,
+    created_by        TEXT,
+    video_name        TEXT,
+    video_path        TEXT,                -- relative to the state directory
+    video_bytes       INTEGER,
+    video_sha256      TEXT,
+    video_duration    REAL,
+    transcript_name   TEXT,
+    transcript_text   TEXT,
+    transcript_cues   TEXT,                -- JSON: [{start, end, speaker, text}]
+    transcript_bytes  INTEGER,
+    has_timestamps    INTEGER NOT NULL DEFAULT 0,
+    notes             TEXT
+);
+CREATE INDEX IF NOT EXISTS sources_created ON sources(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -249,3 +275,29 @@ class Database:
         return self.query(
             "SELECT * FROM test_results WHERE run_id = ? ORDER BY nodeid", (run_id,)
         )
+
+    # --- recordings and transcripts ---------------------------------------------------------
+    def create_source(self, title: str, created_by: str) -> int:
+        return self.execute(
+            "INSERT INTO sources(title, created_at, created_by) VALUES(?, ?, ?)",
+            (title, utcnow(), created_by),
+        )
+
+    def update_source(self, source_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE sources SET {sets} WHERE id = ?", (*fields.values(), source_id))
+
+    def get_source(self, source_id: int) -> sqlite3.Row | None:
+        return self.one("SELECT * FROM sources WHERE id = ?", (source_id,))
+
+    def sources(self) -> list[sqlite3.Row]:
+        return self.query("SELECT * FROM sources ORDER BY id DESC")
+
+    def source_by_video_digest(self, digest: str) -> sqlite3.Row | None:
+        """Uploading the same file twice should attach to the same source, not create a twin."""
+        return self.one("SELECT * FROM sources WHERE video_sha256 = ?", (digest,))
+
+    def delete_source(self, source_id: int) -> None:
+        self.execute("DELETE FROM sources WHERE id = ?", (source_id,))

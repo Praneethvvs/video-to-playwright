@@ -22,6 +22,13 @@ dependencies = [
     "truststore>=0.9",
 ]
 
+[project.optional-dependencies]
+# Turning a recording into tests. Optional because it is the one feature that needs a credential
+# and a large dependency (the SDK bundles a pinned Codex binary), and everything else — the test
+# list, running, drift, the map — works without it. Absent, generation reports itself unavailable
+# with the reason, rather than failing when somebody presses the button.
+codex = ["openai-codex>=0.155"]
+
 [project.scripts]
 testboard = "testboard.__main__:main"
 

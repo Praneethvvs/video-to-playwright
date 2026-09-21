@@ -30,6 +30,7 @@
   <symbol id="i-flask" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v6.2L4.6 18a2 2 0 0 0 1.7 3h11.4a2 2 0 0 0 1.7-3L14 9.2V3"/><path d="M8.6 3h6.8"/><path d="M7.2 14.5h9.6"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M12 9v6M9 12h6"/></symbol>
   <symbol id="i-dl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10.5"/><path d="M8 11l4 4 4-4"/><path d="M4.5 19.5h15"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M8 4.5v15M16 4.5v15M3 12h18M3 8.2h5M3 15.8h5M16 8.2h5M16 15.8h5"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5"/></symbol>
 </svg>
 
@@ -48,6 +49,7 @@
     <a href="/"      class="{% if request.url.path == '/' %}on{% endif %}"><svg><use href="#i-home"/></svg> Overview</a>
     <a href="/tests" class="{% if request.url.path == '/tests' %}on{% endif %}"><svg><use href="#i-list"/></svg> Tests{% if test_total %}<span class="count">{{ test_total }}</span>{% endif %}</a>
     <a href="/runs"  class="{% if request.url.path.startswith('/runs') %}on{% endif %}"><svg><use href="#i-clock"/></svg> Runs{% if queued %}<span class="count">{{ queued|length }}</span>{% endif %}</a>
+    <a href="/recordings" class="{% if request.url.path.startswith('/recordings') %}on{% endif %}"><svg><use href="#i-film"/></svg> Recordings{% if source_total %}<span class="count">{{ source_total }}</span>{% endif %}</a>
     <a href="/drift" class="{% if request.url.path == '/drift' %}on{% endif %}"><svg><use href="#i-diff"/></svg> Drift &amp; map</a>
   </nav>
 

@@ -144,6 +144,16 @@ artifacts:
 safety:
   confirm_before_run: [{markers['destructive']}]
   never_batch: [{markers['destructive']}]
+
+# Turning an uploaded recording into tests. Needs the Codex SDK and a credential:
+#   pip install 'openai-codex'      and either `codex login` or CODEX_API_KEY in the environment.
+# Without them the feature reports itself unavailable; nothing else is affected.
+generation:
+  enabled: true
+  model:                                 # blank uses the account default
+  sandbox: workspace_write               # read_only | workspace_write | full_access
+  timeout_seconds: 3600
+  skill:                                 # path to video-to-playwright; found automatically if unset
 """
 
 
@@ -156,7 +166,7 @@ def update_gitignore(repo: Path) -> bool:
     return True
 
 
-def install(repo: Path, upgrade: bool) -> int:
+def install(repo: Path, upgrade: bool, with_codex: bool = False) -> int:
     if not SOURCE.is_dir():
         print(f"testboard source not found at {SOURCE}", file=sys.stderr)
         return 2
@@ -190,8 +200,9 @@ def install(repo: Path, upgrade: bool) -> int:
         _log("could not upgrade pip in the new venv; continuing with the bundled version")
 
     _log("installing the package and its dependencies")
+    spec = f"{SOURCE}[codex]" if with_codex else str(SOURCE)
     install_result = subprocess.run(
-        [str(python), "-m", "pip", "install", "--quiet", "--upgrade", str(SOURCE)],
+        [str(python), "-m", "pip", "install", "--quiet", "--upgrade", spec],
         capture_output=True, text=True,
     )
     if install_result.returncode != 0:
@@ -236,13 +247,15 @@ def main() -> int:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--upgrade", action="store_true",
                         help="reinstall the package into an existing .testboard/venv")
+    parser.add_argument("--with-codex", action="store_true",
+                        help="also install the Codex SDK, so recordings can be turned into tests")
     args = parser.parse_args()
 
     repo = Path(args.repo).resolve()
     if not repo.is_dir():
         print(f"no such directory: {repo}", file=sys.stderr)
         return 2
-    return install(repo, args.upgrade)
+    return install(repo, args.upgrade, args.with_codex)
 
 
 if __name__ == "__main__":

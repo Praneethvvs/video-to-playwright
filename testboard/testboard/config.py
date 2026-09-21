@@ -96,6 +96,34 @@ class Safety:
 
 
 @dataclass(frozen=True)
+class Generation:
+    """Turning a recording into tests, with an agent."""
+    enabled: bool
+    model: str | None
+    sandbox: str
+    timeout_seconds: int
+    skill: str | None
+
+    def skill_path(self, repo_root: Path) -> Path | None:
+        """Where the video-to-playwright skill lives, so it can travel with the request.
+
+        Resolved in the order that makes a laptop and a container both work without editing this
+        file: an explicit setting, then an environment variable (how a pod is told), then the
+        conventional location a Claude Code install uses.
+        """
+        import os
+
+        if self.skill:
+            candidate = Path(self.skill)
+            return candidate if candidate.is_absolute() else (repo_root / candidate)
+        from_env = os.environ.get("TESTBOARD_SKILL_PATH")
+        if from_env:
+            return Path(from_env)
+        default = Path.home() / ".claude" / "skills" / "video-to-playwright"
+        return default if default.is_dir() else None
+
+
+@dataclass(frozen=True)
 class Config:
     repo_root: Path
     repo_name: str
@@ -104,6 +132,7 @@ class Config:
     drift: Drift
     artifacts: Artifacts
     safety: Safety
+    generation: Generation
     source_path: Path
 
     # --- derived paths, all under the gitignored state directory --------------------------------
@@ -206,6 +235,7 @@ def load(repo_root: Path) -> Config:
     age_raw = drift_raw.get("map_age", {}) or {}
     art_raw = raw.get("artifacts", {}) or {}
     safety_raw = raw.get("safety", {}) or {}
+    gen_raw = raw.get("generation", {}) or {}
 
     return Config(
         repo_root=repo_root.resolve(),
@@ -242,6 +272,13 @@ def load(repo_root: Path) -> Config:
         safety=Safety(
             confirm_before_run=[str(m) for m in (safety_raw.get("confirm_before_run") or [])],
             never_batch=[str(m) for m in (safety_raw.get("never_batch") or [])],
+        ),
+        generation=Generation(
+            enabled=bool(gen_raw.get("enabled", True)),
+            model=gen_raw.get("model") or None,
+            sandbox=str(gen_raw.get("sandbox", "workspace_write")),
+            timeout_seconds=int(gen_raw.get("timeout_seconds", 3600)),
+            skill=gen_raw.get("skill") or None,
         ),
         source_path=path,
     )
