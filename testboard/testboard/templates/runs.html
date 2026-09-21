@@ -2,44 +2,66 @@
 {% block title %}Runs{% endblock %}
 {% block body %}
 
-<h1>Runs{% if target %} <span class="muted mono small">{{ target }}</span>{% endif %}</h1>
-
-{% if target %}
-  <p><a class="link" href="/runs">← all runs</a>
-  {% if target not in present %}
-    <span class="chip warn">this test is no longer in the repository — its history is kept as it was</span>
+<div class="pagehead">
+  <div>
+    <h1>Runs</h1>
+    {% if target %}
+      <p class="mono small">{{ target }}</p>
+    {% else %}
+      <p>Every run started from here. History is never rewritten.</p>
+    {% endif %}
+  </div>
+  {% if target %}
+  <div class="aside">
+    <a class="btn ghost" href="/runs"><svg><use href="#i-back"/></svg> All runs</a>
+  </div>
   {% endif %}
-  </p>
+</div>
+
+{% if target and target not in present %}
+<div class="banner is-warn">
+  <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+  <div>This test is no longer in the repository. Its history is kept exactly as it was rather than
+  quietly dropped.</div>
+</div>
 {% endif %}
 
-<table>
-  <thead>
-    <tr><th>#</th><th>What</th><th>Status</th><th>Reason</th><th>Requested</th><th>Finished</th><th>By</th></tr>
-  </thead>
-  <tbody>
+<div class="card flush">
+  <div class="rows">
   {% for r in rows %}
-    <tr>
-      <td><a href="/runs/{{ r['id'] }}">{{ r['id'] }}</a></td>
-      <td>
-        {{ r['label'] }}
-        {% if r['destructive'] %}<span class="chip danger">writes</span>{% endif %}
-        {% if r['pinned'] %}<span class="chip">pinned</span>{% endif %}
-      </td>
-      <td><span class="status {{ r['status'] }}">{{ r['status'] }}</span></td>
-      <td class="muted small">{{ r['error_reason'] or '' }}</td>
-      <td class="muted small">{{ r['requested_at'] }}</td>
-      <td class="muted small">{{ r['finished_at'] or '' }}</td>
-      <td class="muted small">{{ r['requested_by'] or '' }}</td>
-    </tr>
+    <div class="row">
+      <span class="badge sm {% if r['status'] == 'passed' %}mint{% elif r['status'] in ('failed','error','timeout','crashed') %}rose{% elif r['status'] in ('running','queued') %}blue{% else %}peach{% endif %}">
+        <svg><use href="#i-{{ 'check' if r['status'] == 'passed' else ('play' if r['status'] in ('running','queued') else ('diff' if r['kind'] == 'check_drift' else ('map' if r['kind'] == 'build_map' else 'alert'))) }}"/></svg>
+      </span>
+
+      <div class="row-main">
+        <div class="row-name">
+          <a class="linky" style="text-decoration:none;color:inherit" href="/runs/{{ r['id'] }}">{{ r['label'] }}</a>
+          {% if r['destructive'] %}<span class="chip is-warn">mutates data</span>{% endif %}
+          {% if r['pinned'] %}<span class="chip">pinned</span>{% endif %}
+        </div>
+        <div class="row-sub">
+          #{{ r['id'] }} · {{ r['requested_at'] | when }}{% if r['requested_by'] %} · {{ r['requested_by'] }}{% endif %}
+          {% if r['error_reason'] %} · {{ r['error_reason'].replace('_', ' ') }}{% endif %}
+        </div>
+      </div>
+
+      <div class="row-slot w-status"><span class="dot {{ r['status'] }}">{{ r['status'] }}</span></div>
+      <div class="row-slot w-when">{% if r['finished_at'] %}{{ r['finished_at'] | when }}{% endif %}</div>
+      <div class="row-actions">
+        <a class="btn icon" href="/runs/{{ r['id'] }}" title="Open"><svg><use href="#i-file"/></svg></a>
+      </div>
+    </div>
   {% endfor %}
-  </tbody>
-</table>
+  </div>
 
-{% if not rows %}
-<p class="muted">Nothing has been run from here yet.</p>
-{% endif %}
-
-<p class="muted small">History is never rewritten. A run of a test that has since been renamed or
-deleted still appears, described as it was at the time.</p>
+  {% if not rows %}
+  <div class="empty">
+    <span class="badge blue"><svg><use href="#i-clock"/></svg></span>
+    <div><strong>Nothing has been run from here yet.</strong></div>
+    <div class="small">That is not the same as no results — the pipeline may well have run these.</div>
+  </div>
+  {% endif %}
+</div>
 
 {% endblock %}

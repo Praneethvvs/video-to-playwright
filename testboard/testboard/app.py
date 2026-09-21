@@ -19,6 +19,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTe
                                RedirectResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 
 from . import __version__, drift as driftmod, inventory, preflight, retention
 from .config import Config
@@ -39,6 +40,20 @@ def create_app(config: Config) -> FastAPI:
     app = FastAPI(title=f"testboard — {config.repo_name}", docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=str(HERE / "templates"))
+
+    def when(value: str | None) -> Markup:
+        """Render a timestamp the browser can localise.
+
+        Everything is stored in UTC, and the server has no idea what timezone the reader is in —
+        a container's clock is not their clock. So the ISO value goes out in the markup and the
+        page turns it into "12 min ago" with the absolute local time on hover. With JavaScript
+        off it degrades to the timestamp itself rather than to nothing.
+        """
+        if not value:
+            return Markup('<span class="muted">—</span>')
+        return Markup(f'<time class="t" datetime="{escape(value)}">{escape(value)}</time>')
+
+    templates.env.filters["when"] = when
 
     app.state.config = config
     app.state.db = database
@@ -73,6 +88,7 @@ def create_app(config: Config) -> FastAPI:
             "destructive_running": bool(active and active["destructive"]),
             "startup_checks": getattr(app.state, "startup_checks", []),
             "collect": database.get_meta("collect", {}),
+            "test_total": (database.get_meta("collect", {}) or {}).get("count", 0),
         }
 
     def render(name: str, request: Request, **extra) -> HTMLResponse:

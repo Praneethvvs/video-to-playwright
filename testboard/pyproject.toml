@@ -33,4 +33,6 @@ build-backend = "setuptools.build_meta"
 include = ["testboard*"]
 
 [tool.setuptools.package-data]
-testboard = ["templates/*.html", "static/*"]
+# static/* does not match nested files, and a missing woff2 degrades silently to a fallback font
+# rather than erroring — so the fonts directory is listed explicitly.
+testboard = ["templates/*.html", "static/*.css", "static/*.js", "static/fonts/*.woff2"]

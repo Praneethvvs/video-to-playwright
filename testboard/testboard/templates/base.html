@@ -3,63 +3,107 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}testboard{% endblock %} — {{ repo_name }}</title>
+<title>{% block title %}Overview{% endblock %} · testboard</title>
+<link rel="preload" href="/static/fonts/PlusJakartaSans-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='%2314161a'/><path d='M9 16.5l4.5 4.5L23 11.5' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 </head>
 <body>
 
-<nav class="sidebar">
+{# One sprite, inlined: line icons in the same weight throughout, and no extra requests. #}
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="s" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></g>
+  </defs>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.5 5.5L20 6"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V20h13V9.5"/><path d="M9.5 20v-5.5h5V20"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.3"/><circle cx="4.5" cy="12" r="1.3"/><circle cx="4.5" cy="18" r="1.3"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.2l3.2 2"/></symbol>
+  <symbol id="i-diff" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.6"/><circle cx="18" cy="18" r="2.6"/><path d="M6 8.6V15a3 3 0 0 0 3 3h6.4"/><path d="M13.4 15.6 15.8 18l-2.4 2.4"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.6a1 1 0 0 1 1.52-.85l9 6.4a1 1 0 0 1 0 1.7l-9 6.4A1 1 0 0 1 8 18.4z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2.4"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v4.6h-4.6"/></symbol>
+  <symbol id="i-map" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4 3.6 6.2v13.2L9 17.2l6 2.4 5.4-2.2V4.2L15 6.4z"/><path d="M9 4v13.2M15 6.4v13.2"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3.5h6l-.9 5.2 3.2 3.1H6.7l3.2-3.1z"/><path d="M12 11.8V20.5"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M13.5 3v5.5H19"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8.4v4.4"/><circle cx="12" cy="16.4" r=".2" stroke-width="2.2"/><path d="M10.3 3.9 2.6 17.6A2 2 0 0 0 4.3 20.6h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></symbol>
+  <symbol id="i-flask" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v6.2L4.6 18a2 2 0 0 0 1.7 3h11.4a2 2 0 0 0 1.7-3L14 9.2V3"/><path d="M8.6 3h6.8"/><path d="M7.2 14.5h9.6"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M12 9v6M9 12h6"/></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10.5"/><path d="M8 11l4 4 4-4"/><path d="M4.5 19.5h15"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5"/></symbol>
+</svg>
+
+<div class="shell">
+
+<aside class="sidebar">
   <div class="brand">
-    <strong>testboard</strong>
-    <span class="repo">{{ repo_name }}</span>
+    <span class="brand-mark"><svg><use href="#i-check"/></svg></span>
+    <span class="brand-text">
+      <strong>testboard</strong>
+      <span title="{{ repo_name }}">{{ repo_name }}</span>
+    </span>
   </div>
-  <a href="/"      class="{% if request.url.path == '/' %}on{% endif %}">Overview</a>
-  <a href="/tests" class="{% if request.url.path == '/tests' %}on{% endif %}">Tests</a>
-  <a href="/runs"  class="{% if request.url.path.startswith('/runs') %}on{% endif %}">Runs</a>
-  <a href="/drift" class="{% if request.url.path == '/drift' %}on{% endif %}">Drift &amp; map</a>
+
+  <nav class="nav">
+    <a href="/"      class="{% if request.url.path == '/' %}on{% endif %}"><svg><use href="#i-home"/></svg> Overview</a>
+    <a href="/tests" class="{% if request.url.path == '/tests' %}on{% endif %}"><svg><use href="#i-list"/></svg> Tests{% if test_total %}<span class="count">{{ test_total }}</span>{% endif %}</a>
+    <a href="/runs"  class="{% if request.url.path.startswith('/runs') %}on{% endif %}"><svg><use href="#i-clock"/></svg> Runs{% if queued %}<span class="count">{{ queued|length }}</span>{% endif %}</a>
+    <a href="/drift" class="{% if request.url.path == '/drift' %}on{% endif %}"><svg><use href="#i-diff"/></svg> Drift &amp; map</a>
+  </nav>
 
   <div class="sidefoot">
-    <div class="env">
-      <span class="k">{{ base_url_env }}</span>
-      {% if base_url %}<span class="v">{{ base_url }}</span>
-      {% else %}<span class="v bad">not set</span>{% endif %}
-    </div>
+    <div class="lab">{{ base_url_env }}</div>
+    {% if base_url %}
+      <div class="val">{{ base_url | replace('https://', '') }}</div>
+    {% else %}
+      <div class="val off">not set</div>
+    {% endif %}
     <div class="ver">v{{ version }}</div>
   </div>
-</nav>
+</aside>
 
-<main>
+<main class="content">
 
 {% if destructive_running %}
-<div class="banner bad">
-  <strong>A destructive test is running now.</strong>
-  {{ active['label'] }} — started by {{ active['requested_by'] or 'someone' }}.
-  It is modifying data in the shared environment. Wait for it to finish before you use the app or
-  start another run.
-  <a href="/runs/{{ active['id'] }}">Watch it</a>
+<div class="banner is-bad">
+  <span class="badge sm rose"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>A destructive test is running right now.</strong>
+    {{ active['label'] }}, started by {{ active['requested_by'] or 'someone' }}. It is changing data
+    in the shared environment — wait for it before using the app or starting another run.
+    <a class="linky" href="/runs/{{ active['id'] }}">Watch it</a>
+  </div>
 </div>
 {% elif active %}
-<div class="banner info">
-  Running now: <a href="/runs/{{ active['id'] }}">{{ active['label'] }}</a>
-  {% if queued %} · {{ queued|length }} queued{% endif %}
+<div class="banner is-info">
+  <span class="badge sm blue"><svg><use href="#i-play"/></svg></span>
+  <div>Running now: <a class="linky" href="/runs/{{ active['id'] }}">{{ active['label'] }}</a>
+  {% if queued %} · {{ queued|length }} waiting{% endif %}</div>
 </div>
 {% endif %}
 
 {% for name, check in startup_checks %}{% if not check.ok %}
-<div class="banner warn"><strong>{{ name }}:</strong> {{ check.detail }}</div>
+<div class="banner is-warn">
+  <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+  <div><strong>{{ name }}</strong> — {{ check.detail }}</div>
+</div>
 {% endif %}{% endfor %}
 
 {% if collect and not collect.get('ok') %}
-<div class="banner bad">
-  <strong>Test collection failed</strong> ({{ collect.get('reason') }}, exit {{ collect.get('exit_code') }}).
-  The list below is the last one that worked, not what is in the repository now.
-  <pre class="small">{{ (collect.get('detail') or '')[-1200:] }}</pre>
+<div class="banner is-bad">
+  <span class="badge sm rose"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>Test collection failed</strong> — {{ collect.get('reason') }}, exit {{ collect.get('exit_code') }}.
+    What you see below is the last list that worked, not what is in the repository now.
+    <pre>{{ (collect.get('detail') or '')[-1200:] }}</pre>
+  </div>
 </div>
 {% endif %}
 
 {% block body %}{% endblock %}
 
 </main>
+</div>
 <script src="/static/app.js"></script>
 </body>
 </html>

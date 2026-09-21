@@ -2,121 +2,170 @@
 {% block title %}Drift &amp; map{% endblock %}
 {% block body %}
 
-<h1>Drift &amp; map</h1>
-
-<div class="toolbar">
-  <form method="post" action="/jobs/check_drift" class="inline"><button>Check drift now</button></form>
-  <form method="post" action="/jobs/build_map" class="inline"><button class="secondary">Recapture the map</button></form>
+<div class="pagehead">
+  <div>
+    <h1>Drift &amp; map</h1>
+    <p>What the application looked like when the baseline was taken, and what has moved since.</p>
+  </div>
+  <div class="aside">
+    <form method="post" action="/jobs/build_map" class="inline">
+      <button class="ghost"><svg><use href="#i-map"/></svg> Recapture map</button>
+    </form>
+    <form method="post" action="/jobs/check_drift" class="inline">
+      <button><svg><use href="#i-diff"/></svg> Check drift</button>
+    </form>
+  </div>
 </div>
 
-<h2>The map</h2>
+{# ── the map ─────────────────────────────────────────────────────────────────────────── #}
 {% if not map_info.present %}
-  <div class="banner bad">{{ map_info.schema_note }}</div>
+<div class="banner is-bad">
+  <span class="badge sm rose"><svg><use href="#i-alert"/></svg></span>
+  <div>{{ map_info.schema_note }}</div>
+</div>
 {% else %}
+<div class="card">
   <div class="meta">
-    <div><span class="k">captured</span> {{ map_info.captured_at }}
-      ({{ map_info.age | round(1) }} days ago — {{ map_info.freshness }})</div>
-    <div><span class="k">from</span> {{ map_info.base_url }}</div>
-    <div><span class="k">routes</span> {{ map_info.route_count }}</div>
-    <div><span class="k">schema</span> v{{ map_info.schema_version }}</div>
+    <div><span class="k">captured</span><span class="v">{{ map_info.captured_at | when }}<br>
+      <span class="muted small">{{ map_info.age | round(1) }} days ago — {{ map_info.freshness }}</span></span></div>
+    <div><span class="k">from</span><span class="v small">{{ map_info.base_url }}</span></div>
+    <div><span class="k">routes</span><span class="v">{{ map_info.route_count }}</span></div>
+    <div><span class="k">schema</span><span class="v">v{{ map_info.schema_version }}</span></div>
   </div>
-  {% if map_info.freshness == 'stale' %}
-  <div class="banner warn">
-    The baseline is older than the staleness threshold. Drift is still measured against it, so a
-    clean report here means "nothing has changed since that capture", not "nothing has changed".
-    Recapture after the next deployment.
+</div>
+
+{% if map_info.freshness == 'stale' %}
+<div class="banner is-warn">
+  <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+  <div>The baseline is older than the staleness threshold. Drift is still measured against it, so a
+  clean report means “nothing has changed since that capture”, not “nothing has changed”.
+  Recapture after the next deployment.</div>
+</div>
+{% endif %}
+{% if not map_info.schema_ok %}
+<div class="banner is-warn">
+  <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+  <div>{{ map_info.schema_note }}</div>
+</div>
+{% endif %}
+{% if map_info.unreachable_at_capture %}
+<div class="banner is-warn">
+  <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+  <div>{{ map_info.unreachable_at_capture | length }} route(s) were unreachable when the baseline
+    was captured, so nothing on them is being watched:
+    <ul class="bare">{% for r in map_info.unreachable_at_capture %}<li class="mono tiny">{{ r }}</li>{% endfor %}</ul>
   </div>
-  {% endif %}
-  {% if not map_info.schema_ok %}
-  <div class="banner warn">{{ map_info.schema_note }}</div>
-  {% endif %}
-  {% if map_info.unreachable_at_capture %}
-  <div class="banner warn">
-    {{ map_info.unreachable_at_capture | length }} route(s) were unreachable when the baseline was
-    captured, so nothing on them is being watched:
-    <ul class="bare">{% for r in map_info.unreachable_at_capture %}<li class="mono small">{{ r }}</li>{% endfor %}</ul>
-  </div>
-  {% endif %}
+</div>
+{% endif %}
 {% endif %}
 
+{# ── the last check ──────────────────────────────────────────────────────────────────── #}
 <h2>Last drift check</h2>
 
 {% if not drift.known %}
-  <p class="muted">No drift check has been run from here yet. That is not the same as “no drift”.</p>
+  <div class="card">
+    <div class="empty">
+      <span class="badge blue"><svg><use href="#i-diff"/></svg></span>
+      <div><strong>No drift check has been run from here.</strong></div>
+      <div class="small">Which is not the same as “no drift”.</div>
+    </div>
+  </div>
 
 {% elif drift.outcome in ('unreachable', 'unsettled', 'no-map') %}
-  <div class="banner bad">
-    <strong>Nothing was compared ({{ drift.outcome }}).</strong>
-    This is not a clean result — it is an absence of one. Zero breaking changes below means the
-    check never got far enough to look.
-    {% if drift.outcome == 'unreachable' %}
-      <p>Could not reach {{ drift.checked_url }}. Is the VPN connected?</p>
-      <ul class="bare">{% for r in drift.routes_unreachable %}
-        <li class="mono small">{{ r['route'] }} — {{ r['failure_class'] }}: {{ r['error'][:120] }}</li>
-      {% endfor %}</ul>
-    {% elif drift.outcome == 'unsettled' %}
-      <p>These screens were still rendering when they were sampled. Their controls are missing for
-      harness reasons, not because the application changed:</p>
-      <ul class="bare">{% for r in drift.routes_unsettled %}<li class="mono small">{{ r }}</li>{% endfor %}</ul>
-    {% endif %}
+  <div class="banner is-bad">
+    <span class="badge sm rose"><svg><use href="#i-alert"/></svg></span>
+    <div>
+      <strong>Nothing was compared ({{ drift.outcome }}).</strong>
+      This is not a clean result, it is the absence of one. Zero breaking changes here means the
+      check never got far enough to look.
+      {% if drift.outcome == 'unreachable' %}
+        <p style="margin:8px 0 0">Could not reach {{ drift.checked_url }}. Is the VPN connected?</p>
+        <ul class="bare">{% for r in drift.routes_unreachable %}
+          <li class="mono tiny">{{ r['route'] }} — {{ r['failure_class'] }}: {{ r['error'][:120] }}</li>
+        {% endfor %}</ul>
+      {% elif drift.outcome == 'unsettled' %}
+        <p style="margin:8px 0 0">These screens were still rendering when sampled. Their controls
+        are missing for harness reasons, not because the application changed:</p>
+        <ul class="bare">{% for r in drift.routes_unsettled %}<li class="mono tiny">{{ r }}</li>{% endfor %}</ul>
+      {% endif %}
+    </div>
   </div>
 
 {% else %}
-  <p class="muted">
-    Checked {{ drift.checked_at }}{% if drift.age is not none %} ({{ drift.age | round(1) }} days ago){% endif %}
+  <p class="muted small" style="margin-top:-4px">
+    Checked {{ drift.checked_at | when }}
     · baseline {{ drift.baseline_url }} · checked {{ drift.checked_url }}
   </p>
 
   {% if drift.breaking %}
-  <h3 class="bad">Breaking — {{ drift.breaking | length }}</h3>
+  <h3 class="is-bad">Breaking — {{ drift.breaking | length }}</h3>
   <p class="muted small">Something a committed test refers to has gone. Those tests are stale.</p>
-  <table>
-    <thead><tr><th>Route</th><th>What</th><th>Detail</th><th>Tests affected</th></tr></thead>
-    <tbody>
-    {% for d in drift.breaking %}
-      <tr>
-        <td class="mono small">{{ d['route'] }}</td>
-        <td>{{ d['kind'] }}</td>
-        <td class="mono small">{{ d['detail'] }}</td>
-        <td class="small">{% for f in d['affects'] %}<div class="mono">{{ f }}</div>{% endfor %}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  <div class="card flush">
+    <table>
+      <thead><tr><th>Route</th><th>What</th><th>Detail</th><th>Tests affected</th></tr></thead>
+      <tbody>
+      {% for d in drift.breaking %}
+        <tr>
+          <td class="mono tiny">{{ d['route'] }}</td>
+          <td><span class="chip is-bad">{{ d['kind'] }}</span></td>
+          <td class="mono tiny">{{ d['detail'] }}</td>
+          <td class="stack">{% for f in d['affects'] %}<span class="mono tiny">{{ f }}</span>{% endfor %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
 
-  <div class="banner info">
-    <strong>Each of these needs one of three answers, and the third is the one people forget.</strong>
-    <ol>
-      <li><strong>Not intended</strong> — the application has a defect. Leave the test alone and fix the app.</li>
-      <li><strong>Intended, still tested</strong> — it moved or was renamed. Update the locator.</li>
-      <li><strong>Intended, gone for good</strong> — the behaviour is finished, so the test is redundant. Delete it.</li>
-    </ol>
-    What none of them is: quietly relaxing an assertion until it passes.
+  <div class="banner is-info">
+    <span class="badge sm blue"><svg><use href="#i-alert"/></svg></span>
+    <div>
+      <strong>Each of these needs one of three answers, and the third is the one people forget.</strong>
+      <ol>
+        <li><strong>Not intended</strong> — the application has a defect. Leave the test alone and fix the app.</li>
+        <li><strong>Intended, still tested</strong> — it moved or was renamed. Update the locator.</li>
+        <li><strong>Intended, gone for good</strong> — the behaviour is finished, so the test is redundant. Delete it.</li>
+      </ol>
+      What none of them is: quietly relaxing an assertion until it passes.
+    </div>
   </div>
   {% else %}
-  <p class="good">No breaking drift: nothing that disappeared is referenced by any test.</p>
+  <div class="card">
+    <div class="row" style="padding:4px 0">
+      <span class="badge mint"><svg><use href="#i-check"/></svg></span>
+      <div class="row-main">
+        <div class="row-name">No breaking drift</div>
+        <div class="row-sub">Nothing that disappeared is referenced by any test.</div>
+      </div>
+    </div>
+  </div>
   {% endif %}
 
   {% if drift.benign %}
   <h3>Benign — {{ drift.benign | length }}</h3>
   <p class="muted small">The application gained something and nothing refers to it. Worth knowing,
   not worth stopping for.</p>
-  <table>
-    <thead><tr><th>Route</th><th>What</th><th>Detail</th></tr></thead>
-    <tbody>
-    {% for d in drift.benign %}
-      <tr><td class="mono small">{{ d['route'] }}</td><td>{{ d['kind'] }}</td>
-          <td class="mono small">{{ d['detail'] }}</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  <div class="card flush">
+    <table>
+      <thead><tr><th>Route</th><th>What</th><th>Detail</th></tr></thead>
+      <tbody>
+      {% for d in drift.benign %}
+        <tr><td class="mono tiny">{{ d['route'] }}</td>
+            <td><span class="chip">{{ d['kind'] }}</span></td>
+            <td class="mono tiny">{{ d['detail'] }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% endif %}
 {% endif %}
 
-<div class="banner info">
-  <strong>What this check cannot see.</strong> The map records structure, so it catches things
-  appearing and disappearing. A control that keeps its name and changes what it does reports as no
-  drift. Read a clean report as “no locator has broken”, never as “nothing has changed”.
+<div class="banner is-info" style="margin-top:22px">
+  <span class="badge sm lilac"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>What this check cannot see.</strong> The map records structure, so it catches things
+    appearing and disappearing. A control that keeps its name and changes what it does reports as
+    no drift. Read a clean report as “no locator has broken”, never as “nothing has changed”.
+  </div>
 </div>
 
 {% endblock %}

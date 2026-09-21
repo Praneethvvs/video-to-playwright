@@ -2,84 +2,131 @@
 {% block title %}Overview{% endblock %}
 {% block body %}
 
-<h1>Overview</h1>
-
-<div class="tiles">
-
-  {# Every tile carries its own timestamp and its own "no data" state. A tile that cannot say when
-     it was last true is worse than no tile, because it reads as current. #}
-  <div class="tile {{ map_info.freshness }}">
-    <div class="tile-label">Project map</div>
-    {% if not map_info.present %}
-      <div class="tile-value unknown">missing</div>
-      <div class="tile-note">{{ map_info.schema_note }}</div>
-    {% else %}
-      <div class="tile-value">{{ map_info.age | round(1) }} days old</div>
-      <div class="tile-note">
-        captured {{ map_info.captured_at }} · {{ map_info.route_count }} routes
-        {% if map_info.freshness == 'stale' %}<br><strong>Past the staleness threshold. Every drift
-        report below is measured against an old baseline.</strong>{% endif %}
-      </div>
-    {% endif %}
-    <form method="post" action="/jobs/build_map"><button>Recapture</button></form>
+<div class="pagehead">
+  <div>
+    <h1>{{ repo_name }}</h1>
+    <p>{{ test_count }} test{{ '' if test_count == 1 else 's' }} ·
+       {% if last_run %}last run {{ last_run['finished_at'] | when }}{% else %}nothing run from here yet{% endif %}</p>
   </div>
-
-  <div class="tile {{ drift.tone }}">
-    <div class="tile-label">Drift</div>
-    <div class="tile-value {% if drift.tone == 'unknown' %}unknown{% endif %}">{{ drift.headline }}</div>
-    <div class="tile-note">
-      {% if drift.known %}checked {{ drift.checked_at }}
-        {% if drift.age is not none %}({{ drift.age | round(1) }} days ago){% endif %}
-      {% else %}no check has been run from here yet{% endif %}
-    </div>
-    <form method="post" action="/jobs/check_drift"><button>Check now</button></form>
+  <div class="aside">
+    <form method="post" action="/inventory/refresh" class="inline">
+      <button class="ghost"><svg><use href="#i-refresh"/></svg> Refresh</button>
+    </form>
+    <a class="btn" href="/tests"><svg><use href="#i-play"/></svg> Run a test</a>
   </div>
-
-  <div class="tile">
-    <div class="tile-label">Last suite run</div>
-    {% if last_run %}
-      <div class="tile-value {{ last_run['status'] }}">{{ last_run['status'] }}</div>
-      <div class="tile-note">
-        <a href="/runs/{{ last_run['id'] }}">{{ last_run['label'] }}</a><br>
-        {{ last_run['finished_at'] }}
-      </div>
-    {% else %}
-      <div class="tile-value unknown">never</div>
-      <div class="tile-note">nothing has been run from here yet</div>
-    {% endif %}
-  </div>
-
-  <div class="tile {% if quarantined %}warn{% endif %}">
-    <div class="tile-label">Quarantined</div>
-    <div class="tile-value">{{ quarantined | length }}</div>
-    <div class="tile-note">
-      {% if quarantined %}
-        held out of the gate for an unresolved semantic change
-        <ul class="bare">{% for t in quarantined %}<li>{{ t['name'] }}</li>{% endfor %}</ul>
-      {% else %}nothing is being held out of the gate{% endif %}
-    </div>
-  </div>
-
 </div>
 
-<h2>Tests</h2>
-<p class="muted">
-  {{ test_count }} collected.
-  {{ counts['passed'] }} passed, {{ counts['failed'] }} failed, {{ counts['error'] }} errored,
-  {{ counts['skipped'] }} skipped, {{ counts['unknown'] }} never run from here.
-</p>
-<p><a class="btn" href="/tests">Open the test list</a></p>
+{# One card, divided into cells. Each carries its own timestamp and its own explicit "no data"
+   state — a tile that cannot say when it was last true reads as current, which is worse than
+   showing nothing. #}
+<div class="card">
+  <div class="strip">
+
+    <div class="cell">
+      <div class="cell-top">
+        <span class="badge {% if map_info.freshness == 'stale' %}rose{% elif map_info.freshness == 'warn' %}peach{% else %}mint{% endif %}"><svg><use href="#i-map"/></svg></span>
+        <span class="lab">Project map</span>
+      </div>
+      {% if not map_info.present %}
+        <div class="cell-val is-none">missing</div>
+        <div class="cell-note">{{ map_info.schema_note }}</div>
+      {% else %}
+        <div class="cell-val {% if map_info.freshness == 'stale' %}is-bad{% elif map_info.freshness == 'warn' %}is-warn{% endif %}">{{ map_info.age | round(1) }} days old</div>
+        <div class="cell-note">
+          {{ map_info.route_count }} routes, captured from dev
+          {% if map_info.freshness == 'stale' %}<br><strong>Past the staleness threshold — drift below is measured against an old baseline.</strong>{% endif %}
+        </div>
+      {% endif %}
+      <div class="cell-act">
+        <form method="post" action="/jobs/build_map"><button class="quiet sm">Recapture</button></form>
+      </div>
+    </div>
+
+    <div class="cell">
+      <div class="cell-top">
+        <span class="badge {% if drift.tone == 'bad' %}rose{% elif drift.tone == 'unknown' %}peach{% else %}mint{% endif %}"><svg><use href="#i-diff"/></svg></span>
+        <span class="lab">Drift</span>
+      </div>
+      <div class="cell-val {% if drift.tone == 'unknown' %}is-none{% elif drift.tone == 'bad' %}is-bad{% else %}is-good{% endif %}">{{ drift.headline }}</div>
+      <div class="cell-note">
+        {% if drift.known %}checked {{ drift.checked_at | when }}
+        {% else %}no check has been run from here{% endif %}
+      </div>
+      <div class="cell-act">
+        <form method="post" action="/jobs/check_drift"><button class="quiet sm">Check now</button></form>
+      </div>
+    </div>
+
+    <div class="cell">
+      <div class="cell-top">
+        <span class="badge {% if last_run and last_run['status'] == 'passed' %}mint{% elif last_run %}rose{% else %}blue{% endif %}"><svg><use href="#i-flask"/></svg></span>
+        <span class="lab">Last suite run</span>
+      </div>
+      {% if last_run %}
+        <div class="cell-val {% if last_run['status'] == 'passed' %}is-good{% elif last_run['status'] in ('failed','error','timeout','crashed') %}is-bad{% else %}is-warn{% endif %}">{{ last_run['status'] }}</div>
+        <div class="cell-note"><a class="linky" href="/runs/{{ last_run['id'] }}">{{ last_run['label'] }}</a></div>
+      {% else %}
+        <div class="cell-val is-none">never</div>
+        <div class="cell-note">nothing has been run from here yet</div>
+      {% endif %}
+    </div>
+
+    <div class="cell">
+      <div class="cell-top">
+        <span class="badge {% if quarantined %}peach{% else %}lilac{% endif %}"><svg><use href="#i-pause"/></svg></span>
+        <span class="lab">Quarantined</span>
+      </div>
+      <div class="cell-val {% if quarantined %}is-warn{% endif %}">{{ quarantined | length }}</div>
+      <div class="cell-note">
+        {% if quarantined %}held out of the gate for an unresolved change
+          <ul class="bare">{% for t in quarantined %}<li class="mono tiny">{{ t['name'] }}</li>{% endfor %}</ul>
+        {% else %}nothing is being held out of the gate{% endif %}
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<h2>Results</h2>
+<div class="card flush">
+  <div class="rows">
+    {% for key, label, tone in [('passed','Passed','mint'), ('failed','Failed','rose'),
+                                ('error','Errored','rose'), ('skipped','Skipped','peach'),
+                                ('unknown','Never run from here','blue')] %}
+      {% if counts[key] or key in ('passed', 'unknown') %}
+      <div class="row">
+        <span class="badge sm {{ tone }}"><svg><use href="#i-{{ 'check' if key == 'passed' else ('alert' if key in ('failed','error') else ('pause' if key == 'skipped' else 'clock')) }}"/></svg></span>
+        <div class="row-main"><div class="row-name">{{ label }}</div></div>
+        <div class="row-slot"><span class="cell-val" style="font-size:17px">{{ counts[key] }}</span></div>
+      </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+
+{% if counts['unknown'] == test_count and test_count %}
+<div class="banner is-info">
+  <span class="badge sm blue"><svg><use href="#i-clock"/></svg></span>
+  <div>None of these have been run from testboard yet. That is not the same as “no results” —
+  the pipeline may well have run them. This column only knows about runs started here.</div>
+</div>
+{% endif %}
 
 {% if map_info.present and not map_info.schema_ok %}
-<div class="banner warn"><strong>Map schema:</strong> {{ map_info.schema_note }}</div>
+<div class="banner is-warn">
+  <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+  <div><strong>Map schema</strong> — {{ map_info.schema_note }}</div>
+</div>
 {% endif %}
 
 {% if sweep %}
-<p class="muted small">
-  Last artifact sweep: pruned {{ sweep['pruned'] }} run(s), freed {{ sweep['freed_mb'] }} MB,
-  disk {{ sweep['disk_used_percent'] }}% used.
-  <form method="post" action="/maintenance/sweep" class="inline"><button class="link">Sweep now</button></form>
-</p>
+{# A div, not a p: a form is not phrasing content, so a browser closes the paragraph before it
+   and the button lands on its own line. #}
+<div class="muted tiny" style="margin-top:18px; display:flex; align-items:center; gap:6px">
+  Last artifact sweep pruned {{ sweep['pruned'] }} run(s), freed {{ sweep['freed_mb'] }} MB,
+  disk {{ sweep['disk_used_percent'] }}% used ·
+  <form method="post" action="/maintenance/sweep" class="inline"><button class="linky">sweep now</button></form>
+</div>
 {% endif %}
 
 {% endblock %}
