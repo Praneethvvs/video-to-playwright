@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Drift &amp; map{% endblock %}
+{% block body %}
+
+<h1>Drift &amp; map</h1>
+
+<div class="toolbar">
+  <form method="post" action="/jobs/check_drift" class="inline"><button>Check drift now</button></form>
+  <form method="post" action="/jobs/build_map" class="inline"><button class="secondary">Recapture the map</button></form>
+</div>
+
+<h2>The map</h2>
+{% if not map_info.present %}
+  <div class="banner bad">{{ map_info.schema_note }}</div>
+{% else %}
+  <div class="meta">
+    <div><span class="k">captured</span> {{ map_info.captured_at }}
+      ({{ map_info.age | round(1) }} days ago — {{ map_info.freshness }})</div>
+    <div><span class="k">from</span> {{ map_info.base_url }}</div>
+    <div><span class="k">routes</span> {{ map_info.route_count }}</div>
+    <div><span class="k">schema</span> v{{ map_info.schema_version }}</div>
+  </div>
+  {% if map_info.freshness == 'stale' %}
+  <div class="banner warn">
+    The baseline is older than the staleness threshold. Drift is still measured against it, so a
+    clean report here means "nothing has changed since that capture", not "nothing has changed".
+    Recapture after the next deployment.
+  </div>
+  {% endif %}
+  {% if not map_info.schema_ok %}
+  <div class="banner warn">{{ map_info.schema_note }}</div>
+  {% endif %}
+  {% if map_info.unreachable_at_capture %}
+  <div class="banner warn">
+    {{ map_info.unreachable_at_capture | length }} route(s) were unreachable when the baseline was
+    captured, so nothing on them is being watched:
+    <ul class="bare">{% for r in map_info.unreachable_at_capture %}<li class="mono small">{{ r }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+{% endif %}
+
+<h2>Last drift check</h2>
+
+{% if not drift.known %}
+  <p class="muted">No drift check has been run from here yet. That is not the same as “no drift”.</p>
+
+{% elif drift.outcome in ('unreachable', 'unsettled', 'no-map') %}
+  <div class="banner bad">
+    <strong>Nothing was compared ({{ drift.outcome }}).</strong>
+    This is not a clean result — it is an absence of one. Zero breaking changes below means the
+    check never got far enough to look.
+    {% if drift.outcome == 'unreachable' %}
+      <p>Could not reach {{ drift.checked_url }}. Is the VPN connected?</p>
+      <ul class="bare">{% for r in drift.routes_unreachable %}
+        <li class="mono small">{{ r['route'] }} — {{ r['failure_class'] }}: {{ r['error'][:120] }}</li>
+      {% endfor %}</ul>
+    {% elif drift.outcome == 'unsettled' %}
+      <p>These screens were still rendering when they were sampled. Their controls are missing for
+      harness reasons, not because the application changed:</p>
+      <ul class="bare">{% for r in drift.routes_unsettled %}<li class="mono small">{{ r }}</li>{% endfor %}</ul>
+    {% endif %}
+  </div>
+
+{% else %}
+  <p class="muted">
+    Checked {{ drift.checked_at }}{% if drift.age is not none %} ({{ drift.age | round(1) }} days ago){% endif %}
+    · baseline {{ drift.baseline_url }} · checked {{ drift.checked_url }}
+  </p>
+
+  {% if drift.breaking %}
+  <h3 class="bad">Breaking — {{ drift.breaking | length }}</h3>
+  <p class="muted small">Something a committed test refers to has gone. Those tests are stale.</p>
+  <table>
+    <thead><tr><th>Route</th><th>What</th><th>Detail</th><th>Tests affected</th></tr></thead>
+    <tbody>
+    {% for d in drift.breaking %}
+      <tr>
+        <td class="mono small">{{ d['route'] }}</td>
+        <td>{{ d['kind'] }}</td>
+        <td class="mono small">{{ d['detail'] }}</td>
+        <td class="small">{% for f in d['affects'] %}<div class="mono">{{ f }}</div>{% endfor %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="banner info">
+    <strong>Each of these needs one of three answers, and the third is the one people forget.</strong>
+    <ol>
+      <li><strong>Not intended</strong> — the application has a defect. Leave the test alone and fix the app.</li>
+      <li><strong>Intended, still tested</strong> — it moved or was renamed. Update the locator.</li>
+      <li><strong>Intended, gone for good</strong> — the behaviour is finished, so the test is redundant. Delete it.</li>
+    </ol>
+    What none of them is: quietly relaxing an assertion until it passes.
+  </div>
+  {% else %}
+  <p class="good">No breaking drift: nothing that disappeared is referenced by any test.</p>
+  {% endif %}
+
+  {% if drift.benign %}
+  <h3>Benign — {{ drift.benign | length }}</h3>
+  <p class="muted small">The application gained something and nothing refers to it. Worth knowing,
+  not worth stopping for.</p>
+  <table>
+    <thead><tr><th>Route</th><th>What</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for d in drift.benign %}
+      <tr><td class="mono small">{{ d['route'] }}</td><td>{{ d['kind'] }}</td>
+          <td class="mono small">{{ d['detail'] }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+{% endif %}
+
+<div class="banner info">
+  <strong>What this check cannot see.</strong> The map records structure, so it catches things
+  appearing and disappearing. A control that keeps its name and changes what it does reports as no
+  drift. Read a clean report as “no locator has broken”, never as “nothing has changed”.
+</div>
+
+{% endblock %}

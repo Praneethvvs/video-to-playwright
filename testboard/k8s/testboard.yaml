@@ -1,0 +1,132 @@
+# testboard in Kubernetes, beside the application under test.
+#
+# NOT APPLIED. This has never been deployed; it is written now so that deploying later is a review
+# and an `kubectl apply`, not a design exercise. Read every comment marked DECIDE before using it.
+#
+# The reason to run it in the cluster at all is network reachability: an environment that is only
+# addressable from inside cannot be tested from a laptop. If the dev deployment is reachable over
+# the VPN, running testboard locally is simpler and has fewer moving parts.
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: testboard-state
+spec:
+  # Run history and artifacts live here. Without a volume, every pod reschedule silently resets
+  # the history to empty — which looks exactly like "nobody has run anything", and is the sort of
+  # thing that gets discovered months later.
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi          # must exceed artifacts.total_cap_mb in testboard.yaml, with headroom
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testboard
+  labels: {app: testboard}
+spec:
+  # Exactly one. Two replicas means two independent run queues against one shared environment,
+  # and the "only one test at a time" guarantee — which exists because the suite mutates shared
+  # data — silently stops holding.
+  replicas: 1
+  strategy:
+    type: Recreate           # never two pods at once, not even briefly during a rollout
+  selector:
+    matchLabels: {app: testboard}
+  template:
+    metadata:
+      labels: {app: testboard}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+        # The repository under test is cloned at start rather than baked into the image, so the
+        # image stays generic across every test repo.
+        - name: clone
+          image: alpine/git:latest
+          args:
+            - clone
+            - --depth=1
+            - $(REPO_URL)
+            - /repo
+          env:
+            - name: REPO_URL
+              value: "https://dev.azure.com/<org>/<project>/_git/<test-repo>"   # DECIDE
+          volumeMounts:
+            - {name: repo, mountPath: /repo}
+        - name: prepare-venv
+          image: testboard:0.1.0            # DECIDE: your registry path
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              python -m venv /repo/venv
+              /repo/venv/bin/python -m pip install --quiet -e /repo 2>/dev/null || \
+              /repo/venv/bin/python -m pip install --quiet pytest-playwright
+          volumeMounts:
+            - {name: repo, mountPath: /repo}
+      containers:
+        - name: testboard
+          image: testboard:0.1.0            # DECIDE: your registry path
+          args: ["python", "-m", "testboard", "--repo", "/repo", "--host", "0.0.0.0"]
+          ports:
+            - {containerPort: 8770, name: http}
+          env:
+            # The name of this variable comes from the repo's testboard.yaml; the value belongs
+            # here. In-cluster, point it at the service, not the public hostname.
+            - name: ORCA_BASE_URL
+              value: "http://orca-complex-properties-ui.<namespace>.svc.cluster.local"  # DECIDE
+          resources:
+            # A browser is memory-hungry and bursty. Too low a limit shows up as tests that fail
+            # only in the cluster, which is an expensive thing to debug.
+            requests: {cpu: "500m", memory: "1Gi"}
+            limits:   {cpu: "2",    memory: "4Gi"}
+          volumeMounts:
+            - {name: repo,  mountPath: /repo}
+            - {name: state, mountPath: /repo/.testboard}
+            - {name: shm,   mountPath: /dev/shm}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            # Generous: a liveness restart during a run loses that run. The executor reconciles
+            # it to "crashed" on the way back up, but a flapping probe would do that repeatedly.
+            failureThreshold: 6
+      volumes:
+        - {name: repo,  emptyDir: {}}
+        - {name: state, persistentVolumeClaim: {claimName: testboard-state}}
+        # Chromium crashes with the default 64 MB /dev/shm. This is the single most common cause
+        # of "the browser works locally and dies in the cluster".
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 1Gi}}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testboard
+spec:
+  selector: {app: testboard}
+  ports:
+    - {port: 80, targetPort: http, name: http}
+
+# ---------------------------------------------------------------------------------------------
+# DECIDE BEFORE EXPOSING THIS. No Ingress is included on purpose.
+#
+# Anyone who can reach this can start a run that mutates the shared environment, and can read
+# every trace and log it has captured. It has no authentication of its own and is not going to
+# grow any: that belongs at the ingress, using whatever the cluster already uses for the
+# application itself.
+#
+# Until that is settled, reach it with:
+#     kubectl port-forward svc/testboard 8770:80
+#
+# testboard reads X-Forwarded-User / X-Remote-User for the "who started this run" column, so an
+# authenticating proxy that sets one of those gets attribution for free.

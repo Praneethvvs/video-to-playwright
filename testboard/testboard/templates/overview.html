@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block body %}
+
+<h1>Overview</h1>
+
+<div class="tiles">
+
+  {# Every tile carries its own timestamp and its own "no data" state. A tile that cannot say when
+     it was last true is worse than no tile, because it reads as current. #}
+  <div class="tile {{ map_info.freshness }}">
+    <div class="tile-label">Project map</div>
+    {% if not map_info.present %}
+      <div class="tile-value unknown">missing</div>
+      <div class="tile-note">{{ map_info.schema_note }}</div>
+    {% else %}
+      <div class="tile-value">{{ map_info.age | round(1) }} days old</div>
+      <div class="tile-note">
+        captured {{ map_info.captured_at }} · {{ map_info.route_count }} routes
+        {% if map_info.freshness == 'stale' %}<br><strong>Past the staleness threshold. Every drift
+        report below is measured against an old baseline.</strong>{% endif %}
+      </div>
+    {% endif %}
+    <form method="post" action="/jobs/build_map"><button>Recapture</button></form>
+  </div>
+
+  <div class="tile {{ drift.tone }}">
+    <div class="tile-label">Drift</div>
+    <div class="tile-value {% if drift.tone == 'unknown' %}unknown{% endif %}">{{ drift.headline }}</div>
+    <div class="tile-note">
+      {% if drift.known %}checked {{ drift.checked_at }}
+        {% if drift.age is not none %}({{ drift.age | round(1) }} days ago){% endif %}
+      {% else %}no check has been run from here yet{% endif %}
+    </div>
+    <form method="post" action="/jobs/check_drift"><button>Check now</button></form>
+  </div>
+
+  <div class="tile">
+    <div class="tile-label">Last suite run</div>
+    {% if last_run %}
+      <div class="tile-value {{ last_run['status'] }}">{{ last_run['status'] }}</div>
+      <div class="tile-note">
+        <a href="/runs/{{ last_run['id'] }}">{{ last_run['label'] }}</a><br>
+        {{ last_run['finished_at'] }}
+      </div>
+    {% else %}
+      <div class="tile-value unknown">never</div>
+      <div class="tile-note">nothing has been run from here yet</div>
+    {% endif %}
+  </div>
+
+  <div class="tile {% if quarantined %}warn{% endif %}">
+    <div class="tile-label">Quarantined</div>
+    <div class="tile-value">{{ quarantined | length }}</div>
+    <div class="tile-note">
+      {% if quarantined %}
+        held out of the gate for an unresolved semantic change
+        <ul class="bare">{% for t in quarantined %}<li>{{ t['name'] }}</li>{% endfor %}</ul>
+      {% else %}nothing is being held out of the gate{% endif %}
+    </div>
+  </div>
+
+</div>
+
+<h2>Tests</h2>
+<p class="muted">
+  {{ test_count }} collected.
+  {{ counts['passed'] }} passed, {{ counts['failed'] }} failed, {{ counts['error'] }} errored,
+  {{ counts['skipped'] }} skipped, {{ counts['unknown'] }} never run from here.
+</p>
+<p><a class="btn" href="/tests">Open the test list</a></p>
+
+{% if map_info.present and not map_info.schema_ok %}
+<div class="banner warn"><strong>Map schema:</strong> {{ map_info.schema_note }}</div>
+{% endif %}
+
+{% if sweep %}
+<p class="muted small">
+  Last artifact sweep: pruned {{ sweep['pruned'] }} run(s), freed {{ sweep['freed_mb'] }} MB,
+  disk {{ sweep['disk_used_percent'] }}% used.
+  <form method="post" action="/maintenance/sweep" class="inline"><button class="link">Sweep now</button></form>
+</p>
+{% endif %}
+
+{% endblock %}

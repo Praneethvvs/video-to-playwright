@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run['id'] }}{% endblock %}
+{% block body %}
+
+<h1>
+  {{ run['label'] }}
+  <span class="status {{ run['status'] }}">{{ run['status'] }}</span>
+</h1>
+
+<div class="meta">
+  <div><span class="k">kind</span> {{ run['kind'] }}</div>
+  {% if run['target'] %}<div><span class="k">target</span> <code>{{ run['target'] }}</code></div>{% endif %}
+  <div><span class="k">requested</span> {{ run['requested_at'] }} by {{ run['requested_by'] or '—' }}</div>
+  {% if run['started_at'] %}<div><span class="k">started</span> {{ run['started_at'] }}</div>{% endif %}
+  {% if run['finished_at'] %}<div><span class="k">finished</span> {{ run['finished_at'] }}</div>{% endif %}
+  {% if run['exit_code'] is not none %}<div><span class="k">exit</span> {{ run['exit_code'] }}</div>{% endif %}
+  <div><span class="k">timeout</span> {{ run['timeout_seconds'] }}s</div>
+  {% if run['error_reason'] %}<div><span class="k">reason</span> <code>{{ run['error_reason'] }}</code></div>{% endif %}
+</div>
+
+{% if position is not none %}
+<div class="banner info">Queued — {{ position }} ahead of it. Runs happen one at a time because the
+suite mutates shared data.</div>
+{% endif %}
+
+{% if run['message'] %}
+<div class="banner {% if run['status'] in ('passed',) and 'cleanup' in run['message'] %}warn{% elif run['status'] in ('failed','error','timeout','crashed') %}bad{% else %}info{% endif %}">
+  {{ run['message'] }}
+</div>
+{% endif %}
+
+<div class="toolbar">
+  {% if run['status'] in ('queued', 'running') %}
+    <form method="post" action="/runs/{{ run['id'] }}/cancel" class="inline">
+      <button class="danger">Cancel</button>
+    </form>
+  {% elif run['kind'] == 'pytest' and run['target'] %}
+    {% if run['target'] in present or run['target'].startswith('-m ') or '/' in run['target'] %}
+      <form method="post" action="/run" class="inline">
+        <input type="hidden" name="target" value="{{ run['target'] }}">
+        <input type="hidden" name="label" value="{{ run['label'] }}">
+        {% if run['destructive'] %}
+          <button class="danger" data-confirm="This run mutates data in {{ base_url or base_url_env }}.">Run again (mutates dev data)</button>
+        {% else %}
+          <button>Run again</button>
+        {% endif %}
+      </form>
+    {% else %}
+      <span class="chip warn">this test no longer exists in the repository</span>
+    {% endif %}
+  {% endif %}
+  <form method="post" action="/runs/{{ run['id'] }}/pin" class="inline">
+    <button class="secondary">{% if run['pinned'] %}Unpin{% else %}Pin artifacts{% endif %}</button>
+  </form>
+  <a class="btn secondary" href="/runs/{{ run['id'] }}/log">Raw log</a>
+</div>
+
+{% if totals %}
+<div class="tiles small">
+  <div class="tile"><div class="tile-label">passed</div><div class="tile-value">{{ totals['passed'] }}</div></div>
+  <div class="tile"><div class="tile-label">failed</div><div class="tile-value">{{ totals['failures'] }}</div></div>
+  <div class="tile"><div class="tile-label">errors</div><div class="tile-value">{{ totals['errors'] }}</div></div>
+  <div class="tile"><div class="tile-label">skipped</div><div class="tile-value">{{ totals['skipped'] }}</div></div>
+  <div class="tile"><div class="tile-label">duration</div><div class="tile-value">{{ totals['duration'] }}s</div></div>
+</div>
+{% endif %}
+
+{% if results %}
+<h2>Per test</h2>
+<table>
+  <thead><tr><th>Test</th><th>Outcome</th><th>Took</th></tr></thead>
+  <tbody>
+  {% for r in results %}
+    <tr>
+      <td class="mono small">{{ r['nodeid'] }}</td>
+      <td><span class="status {{ r['outcome'] }}">{{ r['outcome'] }}</span></td>
+      <td class="muted">{{ r['duration'] }}s</td>
+    </tr>
+    {% if r['message'] %}
+    <tr class="detail"><td colspan="3"><pre class="small">{{ r['message'][:3000] }}</pre></td></tr>
+    {% endif %}
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if artifacts %}
+<h2>Artifacts</h2>
+<ul class="bare">
+{% for name in artifacts %}
+  <li><a href="/runs/{{ run['id'] }}/artifact?name={{ name | urlencode }}">{{ name }}</a>
+  {% if name.endswith('.zip') %}<span class="muted small">— a Playwright trace; open it at
+  <a href="https://trace.playwright.dev" target="_blank" rel="noreferrer">trace.playwright.dev</a></span>{% endif %}
+  </li>
+{% endfor %}
+</ul>
+{% elif run['artifacts_pruned'] %}
+<p class="muted">Artifacts for this run have been pruned to keep the disk in budget. The log above
+is kept.</p>
+{% endif %}
+
+<h2>Output</h2>
+<pre id="log" class="log" data-run="{{ run['id'] }}" data-live="{{ 'yes' if live else 'no' }}"></pre>
+
+{% endblock %}
