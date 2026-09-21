@@ -155,70 +155,58 @@ what makes automation safe here: fix the mechanical, quarantine the semantic, re
 weaken an assertion to get to green. Regenerate and commit the map only once a human has confirmed
 the semantic changes were intended.
 
-#### As a blocking gate on the application's pull requests
+#### One URL: the map and the check both point at dev
 
-The strongest place for this check is the app repo's own pull-request build, against the **locally
-built UI from that branch** rather than a shared deployment:
+Tests are written and run **after** the UI change has merged and deployed to dev, so dev already
+contains the change by the time anyone looks at it. There is one base URL in the whole workflow, and
+whoever writes tests never captures a map.
+
+| | |
+|---|---|
+| The committed map | captured from dev, once, after a deployment |
+| Every drift check | run against dev |
+| Whoever writes tests | runs `check_drift.py`, never `build_project_map.py` |
+
+That is a deliberate trade. A break is caught after it deploys rather than before it merges, which is
+later than a pull-request gate would catch it, but it removes the two things that made the earlier
+design hard to live with: nobody needs a local build of the UI running, and nobody can poison the
+shared baseline by capturing it from their own branch.
+
+`check_drift.py` still accepts `--base-url` and `--local` for a team that does want a pre-merge gate
+against a branch build. Two rules hold if you use them. What must match is the **backend**, not the
+URL — structure depends on data, so a build pointed at mocks reports differences that have nothing to
+do with the branch. And **never regenerate the map from an unmerged build**: that declares one
+branch's additions to be the accepted state, and every other developer's check then reports them as
+gone.
+
+**Benign drift must not fail.** Adding a tab or a column is normal work and blocks nothing. If the
+gate fires on ordinary additions it will be switched off within a fortnight, and a disabled gate is
+worse than none. That is why the exit code is non-zero only for the breaking class.
+
+#### Who recaptures the map, and when
+
+Once a UI change deploys to dev the map is stale by design — it still describes the state before that
+deployment. Recapture from dev and commit:
 
 ```bash
-python scripts/check_drift.py --map project-map.json --tests tests/ \
-  --base-url http://localhost:4300
+python scripts/build_project_map.py --base-url <dev-url> --routes routes.txt \
+  --out project-map.json [--channel chrome]
 ```
 
-Breaking drift fails the build. The reasoning is simply that whoever changed the UI is the person who
-knows what the change was for, and they are the cheapest person to update the affected tests — far
-cheaper than someone discovering it during a release. The report names the stale files, so the fix is
-a known edit rather than an investigation.
+After the deployment, never before, and once per deployment rather than once per person. Someone has
+to own it, and a scheduled job that runs after the dev release is the right home. If nobody owns it,
+whoever next runs a drift check inherits every accumulated change as though they caused it.
 
-The two URLs are *meant* to differ, and it is worth being clear about why:
+The sequence for one UI change:
 
-| | Captured from | Represents |
-|---|---|---|
-| The committed map | the shared dev deployment | the **accepted** state of the UI |
-| The pre-PR check | a local build of the branch | the **proposed** state |
+1. The developer merges it; it deploys to dev.
+2. The map is recaptured from dev and committed.
+3. The drift check runs and names any stale tests.
+4. Those tests are fixed, or deleted if the behaviour is gone for good.
+5. New tests for the new behaviour are written against dev, where it now exists.
 
-The diff between those two is precisely the question a pull-request gate should answer: what does this
-change break?
-
-**What must match is the backend, not the URL.** Structure can depend on data — a grid renders columns
-for the data it receives — so a local build pointed at mocks, or at a different API, will differ for
-reasons that have nothing to do with the branch, and those differences land in the breaking column.
-Before relying on the gate, confirm the build under test talks to the same backend the baseline did and
-has any mock-API flag switched off.
-
-**Benign drift must not fail.** Adding a tab or a column is normal work and blocks nothing. If the gate
-fires on ordinary additions it will be switched off within a fortnight, and a disabled gate is worse
-than none. That is why the exit code is non-zero only for the breaking class.
-
-**Regenerate the map when a change is accepted.** Once a PR's UI change is agreed and merged, the map is
-stale by design — it still describes the old accepted state. Recapture it from dev after the deployment
-and commit that, or the next PR inherits drift it did not cause.
-
-#### Writing tests for a feature that isn't deployed yet
-
-A common case, and it needs care in two places.
-
-**Verify locators against the local build.** If the feature only exists on a branch, that is the only
-place its controls exist, so local is the verification target. Nothing else changes about step 7.
-
-**Do not regenerate the map from that local build.** It is tempting, and it breaks the gate for
-everybody else. The map is the *shared* baseline: commit one taken from an unmerged branch and it
-declares that feature to be the accepted state, so every other developer's local build — which does
-not have it — reports those controls as **gone**, which is breaking, and their unrelated pull requests
-start failing. The map changes when something deploys, not when someone writes it.
-
-**Then mind the ordering.** The new tests reference controls that exist only locally, so they cannot
-pass against dev until the feature deploys. Because the tests usually live in a different repository
-from the UI, the two merge independently and nothing enforces the sequence. Pick one:
-
-- **Skip until live** — merge the tests with `@pytest.mark.skip(reason="awaiting <feature> on dev")`
-  and unskip in a follow-up once it is deployed. Simple, visible in the test report, and the safest
-  default.
-- **Hold the test PR** until the UI change has deployed, then merge and let it run for real.
-
-Either is fine; drifting into neither is not. Unskipped tests for undeployed features turn the suite
-red for reasons unrelated to whoever next touches it, and a suite that is red by default stops being
-read.
+Steps 2 and 3 are the same job. Step 4 gates step 5: do not write new coverage on top of a suite that
+is already stale, or you cannot tell your own mistakes from the drift.
 
 One consequence to accept deliberately: a genuine, unresolved app-versus-recording disagreement will
 block every PR touching that area until somebody decides. That is the gate working, but it does mean
