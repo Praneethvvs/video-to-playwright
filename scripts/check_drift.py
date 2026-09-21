@@ -51,7 +51,30 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+STATUS_SCHEMA = 1
+
+
+def write_status(path: str | None, payload: dict) -> None:
+    """Record the outcome as JSON, on every exit path without exception.
+
+    The printed report and the exit code are for a person and for CI. This file is for anything
+    that renders the result later. It is written even when nothing was compared, because an
+    unreachable environment and a clean comparison are different facts, and a consumer that cannot
+    tell them apart will eventually report "no drift" when the truth is "no idea".
+    """
+    if not path:
+        return
+    body = {"schema": STATUS_SCHEMA,
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            **payload}
+    try:
+        Path(path).write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        # A reporting failure must never change the verdict the gate returns.
+        print(f"(could not write status to {path}: {exc})", file=sys.stderr)
 
 
 def load(path: Path) -> dict:
@@ -109,6 +132,10 @@ def find_references(name: str, tests_dir: Path) -> list[str]:
 
     Substring search on the literal name. Page objects centralise locators, so this is usually exact;
     a name built by concatenation at runtime will be missed.
+
+    Paths come back POSIX-style on every platform. They are compared and displayed downstream, and a
+    Windows author reporting `e2e\\pages\\x.py` for what a Linux agent calls `e2e/pages/x.py` turns
+    one stale file into two.
     """
     if not name or len(name) < 3 or not tests_dir.exists():
         return []
@@ -118,7 +145,7 @@ def find_references(name: str, tests_dir: Path) -> list[str]:
         if f.is_file() and f.suffix in (".py", ".ts", ".js", ".tsx"):
             try:
                 if needle in f.read_text(encoding="utf-8", errors="replace").lower():
-                    hits.append(str(f))
+                    hits.append(f.as_posix())
             except OSError:
                 continue
     return hits
@@ -133,8 +160,10 @@ def diff_route(old: dict, new: dict, tests_dir: Path) -> tuple[list[dict], list[
         breaking.append({
             "route": route, "kind": "route unreachable",
             "detail": new.get("error", "")[:160],
-            "affects": [str(p) for p in tests_dir.rglob("*") if p.is_file() and route in
-                        p.read_text(encoding="utf-8", errors="replace")] if tests_dir.exists() else [],
+            "affects": [p.as_posix() for p in tests_dir.rglob("*")
+                        if p.is_file() and p.suffix in (".py", ".ts", ".js", ".tsx")
+                        and route in p.read_text(encoding="utf-8", errors="replace")]
+                       if tests_dir.exists() else [],
         })
         return breaking, benign
     if not old.get("reachable"):
@@ -236,6 +265,11 @@ def main() -> int:
     )
     ap.add_argument("--config", help=f"path to {CONFIG_NAME} (default: found automatically)")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument(
+        "--status-out",
+        help="write the outcome as JSON to this path, on every exit path including the ones "
+             "where nothing was compared",
+    )
     args = ap.parse_args()
 
     # Config fills in whatever was not passed, so the everyday commands need no flags.
@@ -251,6 +285,10 @@ def main() -> int:
         args.base_url = cfg.get("dev_url")
 
     if not Path(args.map).exists():
+        write_status(args.status_out, {
+            "outcome": "no-map", "exit_code": 2, "map_path": args.map,
+            "message": f"no project map at {args.map}",
+        })
         ap.error(
             f"no project map at {args.map}. Capture one first:\n"
             f"  python scripts/build_project_map.py --base-url <dev-url> "
@@ -262,6 +300,33 @@ def main() -> int:
         stored, args.channel, Path(__file__).parent, Path(args.map),
         base_url_override=args.base_url,
     )
+
+    def base_status() -> dict:
+        """The facts that hold regardless of which way the comparison went."""
+        routes = fresh.get("routes", [])
+        return {
+            "map_path": args.map,
+            "tests_dir": args.tests,
+            "baseline_url": stored.get("base_url"),
+            "checked_url": fresh.get("base_url"),
+            "map_schema_version": stored.get("schema_version"),
+            "map_captured_at": stored.get("captured_at"),
+            "checked_captured_at": fresh.get("captured_at"),
+            "map_fingerprint": content_fingerprint(stored),
+            "checked_fingerprint": content_fingerprint(fresh),
+            "routes_total": len(routes),
+            "routes_reachable": sum(1 for r in routes if r.get("reachable")),
+            "routes_unreachable": [
+                {"route": r.get("route"), "failure_class": r.get("failure_class"),
+                 "error": str(r.get("error", ""))[:200]}
+                for r in routes if not r.get("reachable")
+            ],
+            "routes_unsettled": [
+                r.get("route") for r in routes
+                if r.get("reachable") and r.get("settled") is False
+            ],
+            "breaking": [], "benign": [], "stale_test_files": [],
+        }
 
     # Comparing across URLs is the normal case, not a mistake: the baseline is the accepted state of
     # the UI (usually a shared dev deployment) and the check runs against the proposed state (a local
@@ -298,6 +363,7 @@ def main() -> int:
         print("\nIf you are checking a local build, is the dev server running and on the expected")
         print("port? If you are checking a deployed environment, is the VPN up? This is an")
         print("environment problem, not drift, so no tests are implicated.")
+        write_status(args.status_out, {**base_status(), "outcome": "unreachable", "exit_code": 2})
         return 2
 
     unsettled = [
@@ -312,6 +378,7 @@ def main() -> int:
         print("harness reasons, not because the application changed, so treating this as drift would")
         print("report every control on the screen as gone. Re-run; if it persists, the screen may")
         print("never reach a stable state and needs a route-specific readiness signal.")
+        write_status(args.status_out, {**base_status(), "outcome": "unsettled", "exit_code": 2})
         return 2
 
     stored_fp, fresh_fp = content_fingerprint(stored), content_fingerprint(fresh)
@@ -319,6 +386,7 @@ def main() -> int:
         print("No drift. Structure matches the committed map exactly.")
         print("\nNote this only checks structure. A control that kept its name and changed what it")
         print("does reports as no drift — only the tests catch that.")
+        write_status(args.status_out, {**base_status(), "outcome": "clean", "exit_code": 0})
         return 0
 
     tests_dir = Path(args.tests)
@@ -330,6 +398,14 @@ def main() -> int:
             b, n = diff_route(old, new, tests_dir)
             breaking += b
             benign += n
+
+    # Emitted before the two report paths diverge, so --status-out behaves identically whether or
+    # not --json was asked for.
+    write_status(args.status_out, {
+        **base_status(), "outcome": "drift", "exit_code": 1 if breaking else 0,
+        "breaking": breaking, "benign": benign,
+        "stale_test_files": sorted({f for d in breaking for f in d.get("affects", [])}),
+    })
 
     if args.json:
         print(json.dumps({"breaking": breaking, "benign": benign}, indent=2))
