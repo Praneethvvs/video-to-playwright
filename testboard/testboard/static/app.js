@@ -29,6 +29,41 @@
     }
   });
 
+  // --- timestamps -------------------------------------------------------------------------
+  // The server stores and sends UTC because a container's clock is not the reader's clock.
+  // Turning it into something human is the browser's job, since only it knows the timezone.
+  var UNITS = [
+    [60, "s", 1],
+    [3600, "min", 60],
+    [86400, "h", 3600],
+    [2592000, "d", 86400],
+  ];
+
+  function relative(then, now) {
+    var seconds = Math.round((now - then) / 1000);
+    if (seconds < 0) seconds = 0;          // clock skew reads as "just now", never as the future
+    if (seconds < 45) return "just now";
+    for (var i = 0; i < UNITS.length; i++) {
+      if (seconds < UNITS[i][0]) {
+        return Math.round(seconds / UNITS[i][2]) + " " + UNITS[i][1] + " ago";
+      }
+    }
+    return Math.round(seconds / 2592000) + " mo ago";
+  }
+
+  function paintTimes() {
+    var now = Date.now();
+    document.querySelectorAll("time.t").forEach(function (el) {
+      var parsed = Date.parse(el.getAttribute("datetime"));
+      if (isNaN(parsed)) return;
+      el.textContent = relative(parsed, now);
+      el.title = new Date(parsed).toLocaleString();
+    });
+  }
+
+  paintTimes();
+  setInterval(paintTimes, 30000);
+
   // --- live log ---------------------------------------------------------------------------
   var log = document.getElementById("log");
   if (!log) return;
