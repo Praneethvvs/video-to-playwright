@@ -1,0 +1,120 @@
+"""Discover what tests exist, by asking pytest.
+
+Never by parsing source. Collection is the only thing that agrees with what will actually run:
+it resolves conftest files, parametrisation, dynamic markers and skips-at-import.
+
+The exit code carries more information than the output does, and conflating two of its values is
+the most common way a dashboard lies. `5` means nothing matched, which is usually a filter and is
+benign. `2` means collection *failed* — and rendering that as an empty test list tells someone
+their suite is empty when in fact it is broken.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+from .config import Config
+from .db import utcnow
+from .procs import spawn
+
+log = logging.getLogger("testboard.inventory")
+
+PLUGIN_MODULE = "testboard_collect_plugin"
+
+
+@dataclass
+class CollectResult:
+    ok: bool
+    items: list[dict]
+    exit_code: int
+    detail: str          # stderr/stdout tail, only interesting when ok is False
+    reason: str          # collected | no-tests | collection-error | harness
+
+    @property
+    def is_empty_but_healthy(self) -> bool:
+        return self.ok and not self.items
+
+
+def _install_plugin(config: Config) -> Path:
+    """Place the collector plugin where the repo's interpreter can import it."""
+    target_dir = config.state_dir / "plugins"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{PLUGIN_MODULE}.py"
+    source = Path(__file__).with_name("collect_plugin.py")
+    if not target.exists() or target.read_bytes() != source.read_bytes():
+        shutil.copyfile(source, target)
+    return target_dir
+
+
+async def collect(config: Config) -> CollectResult:
+    python = config.repo_python()
+    if not python.exists():
+        return CollectResult(
+            ok=False, items=[], exit_code=-1, reason="harness",
+            detail=(f"the repo interpreter {python} does not exist. Check `runner.python` in "
+                    f"testboard.yaml, and that the test repo's virtualenv has been created."),
+        )
+
+    plugin_dir = _install_plugin(config)
+    out_file = config.state_dir / "collect.json"
+    out_file.unlink(missing_ok=True)
+
+    env = config.environment.subprocess_env()
+    env["TESTBOARD_COLLECT_OUT"] = str(out_file)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{plugin_dir}{os.pathsep}{existing}" if existing else str(plugin_dir)
+
+    argv = [
+        str(python), "-m", "pytest", "--collect-only", "-q",
+        "-p", PLUGIN_MODULE,
+        *config.runner.test_paths,
+    ]
+
+    proc = await spawn(argv, cwd=config.repo_root, env=env)
+    raw = await proc.stdout.read()
+    await proc.wait()
+    text = raw.decode("utf-8", errors="replace")
+    code = proc.returncode or 0
+
+    if code == 5:
+        return CollectResult(True, [], code, text[-4000:], "no-tests")
+
+    if code != 0:
+        # Explicitly not "zero tests". Somebody's import is broken, and saying so is the whole job.
+        return CollectResult(False, [], code, text[-4000:], "collection-error")
+
+    if not out_file.exists():
+        return CollectResult(
+            False, [], code, text[-4000:], "harness",
+        )
+
+    try:
+        items = json.loads(out_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return CollectResult(False, [], code, f"{exc}\n{text[-2000:]}", "harness")
+
+    return CollectResult(True, items, code, "", "collected")
+
+
+async def refresh(config: Config, database) -> CollectResult:
+    """Collect and persist. The previous inventory is left intact if collection failed."""
+    result = await collect(config)
+    if result.ok:
+        database.replace_inventory(result.items)
+    database.set_meta("collect", {
+        "ok": result.ok,
+        "reason": result.reason,
+        "exit_code": result.exit_code,
+        "detail": result.detail,
+        "count": len(result.items),
+        "at": utcnow(),
+    })
+    if not result.ok:
+        log.error("collection failed (%s, exit %s): %s",
+                  result.reason, result.exit_code, result.detail[-500:])
+    return result

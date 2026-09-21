@@ -1,0 +1,36 @@
+[project]
+name = "testboard"
+version = "0.1.0"
+description = "A control panel for a Playwright test repository: what exists, what passed, what drifted, and re-run any single test."
+requires-python = ">=3.11"
+
+# Deliberately small. This installs into its own virtualenv beside a test repo, never into the
+# repo's own environment, so every dependency here is one the test suite never has to agree with.
+# There is no Node, no bundler and no vendored JavaScript library: the browser's native EventSource
+# covers live log streaming, including Last-Event-ID replay on reconnect.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",   # FastAPI needs it to read HTML form posts
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "psutil>=5.9",
+    # Corporate TLS interception (Zscaler and friends) re-signs traffic with a root that lives in
+    # the OS trust store. httpx uses certifi's bundle instead and fails to verify, which the
+    # preflight would otherwise report as "the host is unreachable" when it is perfectly fine.
+    "truststore>=0.9",
+]
+
+[project.scripts]
+testboard = "testboard.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["testboard*"]
+
+[tool.setuptools.package-data]
+testboard = ["templates/*.html", "static/*"]

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Tests{% endblock %}
+{% block body %}
+
+<h1>Tests <span class="muted">({{ total }})</span></h1>
+
+<div class="toolbar">
+  <form method="post" action="/run" class="inline">
+    <input type="hidden" name="label" value="Whole suite">
+    <button>Run all</button>
+  </form>
+  {% for m in markers %}
+  <form method="post" action="/run" class="inline">
+    <input type="hidden" name="target" value="-m {{ m }}">
+    <input type="hidden" name="label" value="Marker: {{ m }}">
+    {% if m in never_batch %}
+      <button class="danger" data-confirm="Every test marked {{ m }} mutates the shared environment.">Run -m {{ m }}</button>
+    {% else %}
+      <button>Run -m {{ m }}</button>
+    {% endif %}
+  </form>
+  {% endfor %}
+  <form method="post" action="/inventory/refresh" class="inline right">
+    <button class="secondary">Refresh list</button>
+  </form>
+</div>
+
+<p class="muted small">
+  Collected by asking pytest, not by reading the source, so this is what would actually run.
+  {% if never_batch %}“Run all” excludes {{ never_batch | join(', ') }} by policy.{% endif %}
+</p>
+
+{% for file, items in by_file.items() %}
+<h2 class="filehead">
+  {{ file }}
+  {% if items[0]['maybe_stale'] %}<span class="chip warn" title="The drift check found a name this
+  file mentions that no longer exists in the application. The link is inferred by text search, not
+  by a real reference, so confirm before acting.">possibly stale</span>{% endif %}
+  {% set file_destructive = items | selectattr('destructive') | list | length > 0 %}
+  <form method="post" action="/run" class="inline">
+    <input type="hidden" name="target" value="{{ file }}">
+    <input type="hidden" name="label" value="{{ file }}">
+    {% if file_destructive %}
+      <button class="danger small"
+              data-confirm="This file contains tests that mutate data in {{ base_url or base_url_env }}.">
+        Run file (mutates dev data)
+      </button>
+    {% else %}
+      <button class="secondary small">Run file</button>
+    {% endif %}
+  </form>
+</h2>
+
+<table>
+  <thead>
+    <tr><th>Test</th><th>Markers</th><th>Last result</th><th>Took</th><th>When</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for t in items %}
+    <tr>
+      <td class="mono">{{ t['name'] }}</td>
+      <td>
+        {% for m in t['markers'] %}
+          <span class="chip {% if m == 'writes' %}danger{% elif t['quarantined'] and m == 'quarantine' %}warn{% endif %}">{{ m }}</span>
+        {% endfor %}
+      </td>
+      <td>
+        {% if t['last'] %}
+          <span class="status {{ t['last']['outcome'] }}">{{ t['last']['outcome'] }}</span>
+        {% else %}
+          <span class="status unknown">never run here</span>
+        {% endif %}
+      </td>
+      <td class="muted">{% if t['last'] and t['last']['duration'] %}{{ t['last']['duration'] }}s{% endif %}</td>
+      <td class="muted small">{% if t['last'] %}{{ t['last']['at'] }}{% endif %}</td>
+      <td class="right">
+        <a class="link small" href="/runs?target={{ t['nodeid'] | urlencode }}">history</a>
+        <form method="post" action="/run" class="inline">
+          <input type="hidden" name="target" value="{{ t['nodeid'] }}">
+          <input type="hidden" name="label" value="{{ t['name'] }}">
+          {% if t['destructive'] %}
+            <button class="danger small"
+                    data-confirm="{{ t['name'] }} mutates data in {{ base_url or base_url_env }}. Other people may be using it right now.">
+              Run (mutates dev data)
+            </button>
+          {% else %}
+            <button class="small">Run</button>
+          {% endif %}
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endfor %}
+
+{% if total == 0 and collect and collect.get('ok') %}
+<div class="banner info">
+  No tests matched <code>{{ config.runner.test_paths if config else 'the configured test paths' }}</code>.
+  Collection succeeded, so this is a filter or a path, not a broken suite.
+</div>
+{% endif %}
+
+{% endblock %}

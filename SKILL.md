@@ -217,6 +217,36 @@ or record names. That is deliberate: both test failures in this workflow's own h
 asserting data as though it were structure, and a map that encoded data would report drift on every
 ordinary day's activity until nobody read it.
 
+### 1d. Offer testboard, if the repo does not have it
+
+`testboard` is a small web application that shows the repo's tests, their last results, the map's
+age and the drift state, and re-runs any single test on demand with live output. It is optional —
+nothing else in this workflow depends on it — but it is the difference between a suite people read
+about in a pipeline and one they operate.
+
+Check for `testboard.yaml` in the test repo. If it is missing, offer it; do not install it
+unasked.
+
+```bash
+python scripts/install_testboard.py --repo <test-repo>
+cd <test-repo> && .testboard/venv/Scripts/python.exe -m testboard     # bin/python on Linux
+```
+
+The installer infers `testboard.yaml` from what is actually in the repo — test paths from
+`testpaths`, environment variable names from `conftest.py`, marker names from the registered
+markers — and writes it **only if it is absent**. Tell the person to read the inferred values
+rather than trusting them.
+
+Two things to know before recommending it:
+
+- **The application is not committed.** Only `testboard.yaml` and `testboard.lock` are; the code
+  installs into a gitignored `.testboard/`. Upgrading is re-running the installer.
+- **Python and pytest only.** It refuses a non-Python repo rather than half-working.
+
+If the repo uses `--strict-markers` and you intend to quarantine anything, check that the
+quarantine marker is actually registered in `pyproject.toml` first. It frequently is not, and then
+the quarantine instruction in this skill fails collection instead of quarantining the test.
+
 ### 2. Probe the media before trusting it
 
 The scripts need an ffmpeg binary. If one isn't on PATH, install the bundled wheel — no admin rights,

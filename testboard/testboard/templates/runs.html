@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Runs{% endblock %}
+{% block body %}
+
+<h1>Runs{% if target %} <span class="muted mono small">{{ target }}</span>{% endif %}</h1>
+
+{% if target %}
+  <p><a class="link" href="/runs">← all runs</a>
+  {% if target not in present %}
+    <span class="chip warn">this test is no longer in the repository — its history is kept as it was</span>
+  {% endif %}
+  </p>
+{% endif %}
+
+<table>
+  <thead>
+    <tr><th>#</th><th>What</th><th>Status</th><th>Reason</th><th>Requested</th><th>Finished</th><th>By</th></tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><a href="/runs/{{ r['id'] }}">{{ r['id'] }}</a></td>
+      <td>
+        {{ r['label'] }}
+        {% if r['destructive'] %}<span class="chip danger">writes</span>{% endif %}
+        {% if r['pinned'] %}<span class="chip">pinned</span>{% endif %}
+      </td>
+      <td><span class="status {{ r['status'] }}">{{ r['status'] }}</span></td>
+      <td class="muted small">{{ r['error_reason'] or '' }}</td>
+      <td class="muted small">{{ r['requested_at'] }}</td>
+      <td class="muted small">{{ r['finished_at'] or '' }}</td>
+      <td class="muted small">{{ r['requested_by'] or '' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if not rows %}
+<p class="muted">Nothing has been run from here yet.</p>
+{% endif %}
+
+<p class="muted small">History is never rewritten. A run of a test that has since been renamed or
+deleted still appears, described as it was at the time.</p>
+
+{% endblock %}

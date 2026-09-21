@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}testboard{% endblock %} — {{ repo_name }}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<nav class="sidebar">
+  <div class="brand">
+    <strong>testboard</strong>
+    <span class="repo">{{ repo_name }}</span>
+  </div>
+  <a href="/"      class="{% if request.url.path == '/' %}on{% endif %}">Overview</a>
+  <a href="/tests" class="{% if request.url.path == '/tests' %}on{% endif %}">Tests</a>
+  <a href="/runs"  class="{% if request.url.path.startswith('/runs') %}on{% endif %}">Runs</a>
+  <a href="/drift" class="{% if request.url.path == '/drift' %}on{% endif %}">Drift &amp; map</a>
+
+  <div class="sidefoot">
+    <div class="env">
+      <span class="k">{{ base_url_env }}</span>
+      {% if base_url %}<span class="v">{{ base_url }}</span>
+      {% else %}<span class="v bad">not set</span>{% endif %}
+    </div>
+    <div class="ver">v{{ version }}</div>
+  </div>
+</nav>
+
+<main>
+
+{% if destructive_running %}
+<div class="banner bad">
+  <strong>A destructive test is running now.</strong>
+  {{ active['label'] }} — started by {{ active['requested_by'] or 'someone' }}.
+  It is modifying data in the shared environment. Wait for it to finish before you use the app or
+  start another run.
+  <a href="/runs/{{ active['id'] }}">Watch it</a>
+</div>
+{% elif active %}
+<div class="banner info">
+  Running now: <a href="/runs/{{ active['id'] }}">{{ active['label'] }}</a>
+  {% if queued %} · {{ queued|length }} queued{% endif %}
+</div>
+{% endif %}
+
+{% for name, check in startup_checks %}{% if not check.ok %}
+<div class="banner warn"><strong>{{ name }}:</strong> {{ check.detail }}</div>
+{% endif %}{% endfor %}
+
+{% if collect and not collect.get('ok') %}
+<div class="banner bad">
+  <strong>Test collection failed</strong> ({{ collect.get('reason') }}, exit {{ collect.get('exit_code') }}).
+  The list below is the last one that worked, not what is in the repository now.
+  <pre class="small">{{ (collect.get('detail') or '')[-1200:] }}</pre>
+</div>
+{% endif %}
+
+{% block body %}{% endblock %}
+
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

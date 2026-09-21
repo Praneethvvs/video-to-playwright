@@ -7,7 +7,7 @@ Always-on guidance for agent sessions in this repository, including Codex.
 A workflow for turning a screen recording of someone manually testing a web app into a verified,
 passing Playwright suite, plus a walkthrough video a non-engineer can sign off.
 
-`SKILL.md` holds the eleven-step workflow. Read it before starting that kind of task — it is the
+`SKILL.md` holds the workflow, numbered 1 through 12 with sub-steps at 1b, 1c, 1d and 11b. Read it before starting that kind of task — it is the
 instruction set, not background reading.
 
 ## Invocation
@@ -53,10 +53,13 @@ These hold regardless of which step you are on:
 | `references/clarification-loop.md` | Deciding what to ask a human, and when |
 | `references/verification-loop.md` | Failures aren't obvious, or deciding whether you're done |
 | `references/recording-verification-video.md` | Producing the walkthrough |
+| `references/silent-recordings.md` | The recording has no narration and cannot be redone |
+| `references/running-with-codex.md` | Driving this from Codex rather than Claude Code |
+| `testboard/README.md` | The optional control panel offered at step 1d |
 
 ## Tooling notes
 
-The four scripts in `scripts/` are plain Python and need an ffmpeg binary. If one is not on `PATH`,
+The media scripts in `scripts/` are plain Python and need an ffmpeg binary. If one is not on `PATH`,
 `pip install imageio-ffmpeg` provides it inside a venv with no admin rights.
 
 They are useful on their own, with no model involved, if you only want to pull frames from a video or
