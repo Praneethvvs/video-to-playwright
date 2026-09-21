@@ -281,25 +281,61 @@ class CodexAgent:
             handle = await thread.turn(items)
             self._turn = handle
 
+            # The outcome is taken from the stream's own completion event, not from a follow-up
+            # run(). Consuming the stream closes the subscription, so calling run() afterwards
+            # raises TransportClosedError — which recorded a perfectly good run, one that had
+            # already written its tests, as a failure.
+            completed = None
             async for note in handle.stream():
+                if type(getattr(note, "payload", None)).__name__ == "TurnCompletedNotification":
+                    completed = note.payload.turn
                 for line in _render(note):
                     emit(line)
 
-            result = await handle.run()
-            usage = getattr(result, "usage", None)
+            if completed is None:
+                # The stream ended without a completion event. Whatever happened, it is not a
+                # success, and saying so beats guessing from the files left behind.
+                return GenerationResult(
+                    False, "incomplete", "",
+                    "the agent's stream ended before the turn completed; check the log and the "
+                    "working tree before trusting anything it wrote",
+                )
+
+            status = getattr(completed.status, "value", str(completed.status))
+            final = _final_message(completed)
             return GenerationResult(
-                ok=str(result.status) in ("completed", "TurnStatus.completed"),
-                status=str(result.status),
-                final_response=result.final_response or "",
-                error=str(result.error) if result.error else "",
-                duration_ms=result.duration_ms,
-                tokens=getattr(usage, "total_tokens", None) if usage else None,
+                ok=status.endswith("completed") and not completed.error,
+                status=status,
+                final_response=final,
+                error=str(completed.error) if completed.error else "",
+                duration_ms=completed.duration_ms,
             )
         finally:
             try:
                 await codex.close()
             except Exception:                       # noqa: BLE001
                 pass
+
+
+def _unwrap(item):
+    """ThreadItem is a RootModel around a union of ~19 item types; the real one is `.root`.
+
+    Missing this is why the log labelled every event "ThreadItem" and why the agent's closing
+    summary came back empty — the wrapper has exactly one attribute, and none of the ones worth
+    reading.
+    """
+    return getattr(item, "root", item)
+
+
+def _final_message(turn) -> str:
+    """The agent's closing summary — the last agent message in the turn."""
+    for wrapped in reversed(getattr(turn, "items", []) or []):
+        item = _unwrap(wrapped)
+        if "AgentMessage" in type(item).__name__:
+            text = _text_of(item)
+            if text:
+                return text[:8000]
+    return ""
 
 
 def _text_of(item) -> str | None:
@@ -349,19 +385,23 @@ def _render(note) -> list[str]:
         return [ln for ln in str(chunk).rstrip().splitlines() if ln.strip()][-20:]
 
     if name in ("ItemStarted", "ItemCompleted"):
-        item = get("item") or payload
-        kind = (getattr(item, "type", None) or getattr(item, "item_type", None)
-                or type(item).__name__)
+        item = _unwrap(get("item") or payload)
+        kind = type(item).__name__.replace("ThreadItem", "")
+
         command = getattr(item, "command", None)
         if command:
             return [f"$ {command}"] if name == "ItemStarted" else []
-        path = getattr(item, "path", None) or getattr(item, "file_path", None)
-        if path:
-            return [f"{'edit' if name == 'ItemCompleted' else 'open'} {path}"]
+        changes = getattr(item, "changes", None) or getattr(item, "path", None)
+        if changes:
+            return [f"edit {changes}"] if name == "ItemCompleted" else []
+        if kind == "Reasoning":
+            text = _text_of(item)
+            return [f"  {line}" for line in str(text or "")[:600].splitlines() if line.strip()] \
+                if name == "ItemCompleted" else []
         text = _text_of(item)
         if text and name == "ItemCompleted":
-            return [f"· {line}" for line in str(text)[:4000].splitlines() if line.strip()]
-        return [f"→ {kind}"] if name == "ItemStarted" else []
+            return [line for line in str(text)[:4000].splitlines() if line.strip()]
+        return [f"→ {kind}"] if name == "ItemStarted" and kind else []
 
     if name == "TurnDiffUpdated":
         return ["(the working tree changed)"]
