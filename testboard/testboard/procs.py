@@ -35,6 +35,11 @@ async def spawn(argv: list[str], cwd: Path, env: dict[str, str]) -> asyncio.subp
         "stdout": asyncio.subprocess.PIPE,
         "stderr": asyncio.subprocess.STDOUT,
         "stdin": asyncio.subprocess.DEVNULL,
+        # readline() raises ValueError when a single line exceeds the stream limit, which
+        # defaults to 64 KiB. A Playwright failure prints the whole DOM of the element it could
+        # not click, and that is routinely larger — so the default turns a normal failure into a
+        # dead pump and a run that hangs until its timeout.
+        "limit": 4 * 1024 * 1024,
     }
     if IS_WINDOWS:
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP

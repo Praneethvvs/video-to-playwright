@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,6 +60,11 @@ async def accept(config: Config, database: Database, *, filename: str, stream,
     """Store one uploaded file, creating or updating a source."""
     name = safe_name(filename)
 
+    # Attaching to a recording that has since been deleted would write the file to disk, update
+    # nothing, and report success.
+    if source_id is not None and database.get_source(source_id) is None:
+        raise ValueError(f"{name}: that recording no longer exists")
+
     if transcripts.is_transcript(name):
         return await _accept_transcript(config, database, name, stream, uploaded_by, source_id)
     if transcripts.is_video(name):
@@ -80,7 +86,10 @@ async def _accept_video(config: Config, database: Database, name: str, stream,
                         uploaded_by: str, source_id: int | None) -> Accepted:
     digest = hashlib.sha256()
     size = 0
-    scratch = config.state_dir / "media" / f".incoming-{name}"
+    # Unique per upload. Keyed on the filename alone, two people uploading recordings with the
+    # same name — and Teams names every recording the same way — write into one file and each
+    # gets the other's bytes.
+    scratch = config.state_dir / "media" / f".incoming-{uuid.uuid4().hex}-{name}"
     scratch.parent.mkdir(parents=True, exist_ok=True)
 
     with scratch.open("wb") as fh:
@@ -146,6 +155,17 @@ async def _accept_transcript(config: Config, database: Database, name: str, stre
 
     parsed = transcripts.parse(target, raw)
 
+    # An unreadable file must not destroy a good transcript already attached. This happens for
+    # real: a .docx that is actually a renamed .doc parses to nothing, and silently replacing a
+    # working transcript with an empty one takes the Convert button away with no explanation.
+    if not parsed.cues:
+        existing = database.get_source(source_id)
+        if existing and existing["transcript_text"]:
+            raise ValueError(
+                f"{name} could not be read as a transcript, so the existing "
+                f"{existing['transcript_name']} has been left in place."
+            )
+
     import json
     database.update_source(
         source_id,
@@ -172,13 +192,17 @@ def delete(config: Config, database: Database, source_id: int) -> None:
     database.delete_source(source_id)
 
 
-def discover(config: Config) -> list[Path]:
+def discover(config: Config) -> list[str]:
     """Recordings and transcripts already sitting in the repository, not yet registered.
 
     Teams drops these into an `assets/` or `recordings/` folder and they stay there. Offering to
     adopt what is already present beats asking someone to re-upload a file they already have.
+
+    Returns paths **relative to the repository root**. Returning absolute ones and then rendering
+    only the basename is what made the Adopt button post "file.docx" for a file that actually
+    lives at "assets/file.docx", so the server could never find it and every Adopt was a 400.
     """
-    found: list[Path] = []
+    found: list[str] = []
     for folder in ("assets", "recordings", "media", "docs"):
         base = config.repo_root / folder
         if not base.is_dir():
@@ -186,5 +210,5 @@ def discover(config: Config) -> list[Path]:
         for path in sorted(base.rglob("*")):
             if path.is_file() and (transcripts.is_video(path.name)
                                    or path.suffix.lower() in (".vtt", ".srt", ".docx")):
-                found.append(path)
+                found.append(path.relative_to(config.repo_root).as_posix())
     return found

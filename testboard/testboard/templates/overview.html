@@ -73,7 +73,7 @@
         <div class="cell-val is-none">missing</div>
         <div class="cell-note">{{ map_info.schema_note }}</div>
       {% else %}
-        <div class="cell-val {% if map_info.freshness == 'stale' %}is-bad{% elif map_info.freshness == 'warn' %}is-warn{% endif %}">{{ map_info.age | round(1) }} days old</div>
+        <div class="cell-val {% if map_info.freshness == 'stale' %}is-bad{% elif map_info.freshness == 'warn' %}is-warn{% endif %}">{% if map_info.age is not none %}{{ map_info.age | round(1) }} days old{% else %}age unknown{% endif %}</div>
         <div class="cell-note">
           {{ map_info.route_count }} routes, captured from dev
           {%- if map_info.freshness == 'stale' %}<br><strong>Past the staleness threshold.</strong>{% endif %}

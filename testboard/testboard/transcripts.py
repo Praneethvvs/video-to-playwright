@@ -83,8 +83,12 @@ WORD_PARA = re.compile(r"<w:p[ >].*?</w:p>|<w:p/>", re.S)
 WORD_RUN = re.compile(r"<w:t(?:\s[^>]*)?>(.*?)</w:t>|(<w:br\s*/>)", re.S)
 # Teams writes the speaker and offset at the head of the utterance, in the same paragraph as the
 # first line of speech: "Jane Doe   0:10So this recording is for...".
-TEAMS_HEADER = re.compile(r"^(?P<who>[^\d].{0,58}?)\s{2,}(?P<at>\d{1,2}:\d{2}(?::\d{2})?)(?P<rest>.*)$",
-                          re.S)
+# NOT re.DOTALL. With it, `.{0,58}?` crosses a newline, so the speaker name swallows the first
+# line of speech whenever the header sits on its own line. The name is therefore matched without
+# newlines, and only the body is allowed to span them.
+TEAMS_HEADER = re.compile(
+    r"^(?P<who>[^\d\n]{1,58}?)[ \t]{2,}(?P<at>\d{1,2}:\d{2}(?::\d{2})?)(?P<rest>[\s\S]*)$"
+)
 
 
 def _normalise_offset(stamp: str) -> str:

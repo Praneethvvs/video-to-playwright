@@ -51,10 +51,10 @@
   {% for path in discovered %}
     <div class="row">
       <span class="badge sm"><svg><use href="#i-file"/></svg></span>
-      <div class="row-main"><div class="row-name mono">{{ path.name }}</div></div>
+      <div class="row-main"><div class="row-name mono">{{ path }}</div></div>
       <div class="row-actions">
         <form method="post" action="/recordings/import" class="inline">
-          <input type="hidden" name="path" value="{{ path.name }}">
+          <input type="hidden" name="path" value="{{ path }}">
           <button class="quiet sm">Adopt</button>
         </form>
       </div>

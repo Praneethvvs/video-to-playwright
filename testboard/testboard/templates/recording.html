@@ -25,6 +25,15 @@
   </div>
 </div>
 
+{# Uploads from this page redirect back here, so the result has to be shown here too. Without
+   this the file lands, the page reloads unchanged, and nothing says whether it worked. #}
+{% for message in last_upload %}
+<div class="banner is-info">
+  <span class="badge sm blue"><svg><use href="#i-check"/></svg></span>
+  <div>{{ message }}</div>
+</div>
+{% endfor %}
+
 {% if not source['transcript_text'] %}
 <div class="banner is-warn">
   <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
