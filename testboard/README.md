@@ -267,7 +267,7 @@ Until that is settled: `kubectl port-forward svc/testboard 8770:80`.
 pip install -e ".[dev]" && pytest
 ```
 
-113 tests, about three seconds, no browser and no network. They cover the properties that are expensive
+135 tests, about fifteen seconds, no browser and no network. (It was three until the retention and working-tree tests arrived; those shell out to real `git` and do real file deletion, which is the point of them.) They cover the properties that are expensive
 to be wrong about rather than aiming at coverage:
 
 | | |
@@ -278,6 +278,8 @@ to be wrong about rather than aiming at coverage:
 | `test_ingest.py` | an import never approves a test, never adds an inventory row, and never attributes a result to an ambiguous name |
 | `test_app_security.py` | the middleware stack as wired: every mutating route needs the token, a cross-site POST is refused, and the Referer cannot steer a redirect off-site |
 | `test_agent_changes.py` | a clean working tree reads as clean and an unreadable one reads as unknown; a deleted test is named; pre-existing edits are not blamed on the agent |
+| `test_retention.py` | the sweep keeps the newest run of every test, honours a pin, never touches a running run, and prunes directories rather than rows -- including when the global cap binds first |
+| `test_safety.py` | a destructive run without a confirmation starts nothing, "run all" excludes it rather than asking about it, and the disk floor refuses before pytest rather than after a truncated trace |
 
 They found a live defect on their first run: `hmac.compare_digest` accepts ASCII only when given
 `str`, so a token containing any non-ASCII character raised `TypeError` inside the auth middleware
