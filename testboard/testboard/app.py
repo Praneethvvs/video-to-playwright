@@ -96,8 +96,9 @@ def create_app(config: Config) -> FastAPI:
             "startup_checks": getattr(app.state, "startup_checks", []),
             "collect": database.get_meta("collect", {}),
             "test_total": (database.get_meta("collect", {}) or {}).get("count", 0),
-            "pending_total": len(database.pending_tests()),
-            "source_total": len(database.sources()),
+            "pending_total": database.state_counts()["pending"],
+            "source_total": database.one(
+                "SELECT COUNT(*) AS n FROM sources")["n"],
             # Read once and cleared. Left in the database it becomes a message about an
             # upload from hours ago, shown at the top of the page as though it just happened.
             "last_upload": _take_flash(),
@@ -296,10 +297,14 @@ def create_app(config: Config) -> FastAPI:
         return RedirectResponse("/", status_code=303)
 
     # --- recordings and transcripts ---------------------------------------------------------
-    def _source_view(row) -> dict:
-        """A recording plus what came out of it: runs, tests, and how many still need a decision."""
+    def _source_view(row, all_tests: list[dict] | None = None) -> dict:
+        """A recording plus what came out of it: runs, tests, and how many still need a decision.
+
+        `all_tests` lets the list page load the inventory once instead of once per recording.
+        """
         runs = database.history(limit=10, target=f"source:{row['id']}")
-        tests = [t for t in database.inventory() if t["source_id"] == row["id"]]
+        tests = [t for t in (all_tests if all_tests is not None else database.inventory())
+                 if t["source_id"] == row["id"]]
         return {
             "row": row,
             "runs": runs,
@@ -312,7 +317,8 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/recordings", response_class=HTMLResponse)
     async def recordings_page(request: Request):
-        views = [_source_view(row) for row in database.sources()]
+        all_tests = database.inventory()
+        views = [_source_view(row, all_tests) for row in database.sources()]
         return render("recordings.html", request, views=views,
                       agent=agentmod.availability(),
                       discovered=media.discover(config))
