@@ -120,6 +120,20 @@ async def kill_stale_pid(pid: int, created_at: float) -> bool:
 
 BROWSER_NAMES = ("chrome", "chromium", "headless_shell", "msedge", "firefox", "webkit")
 
+# Flags a browser only carries when something automated launched it. Requiring one of these is
+# what makes it safe to also look at the working directory: a Playwright browser inherits
+# pytest's cwd, which is the repository root, and so could a browser the person at the keyboard
+# started from a terminal in that same directory. Killing somebody's actual browser because it
+# was old and started from the wrong folder would be a far worse bug than leaking one of ours.
+AUTOMATION_MARKERS = (
+    "--enable-automation",
+    "--remote-debugging-pipe",
+    "--remote-debugging-port",
+    "--headless",
+    "--disable-field-trial-config",
+    "-juggler-pipe",                    # Firefox, under Playwright
+)
+
 
 def sweep_orphan_browsers(*roots: Path, older_than_seconds: float = 1800,
                           run_in_progress: bool = False) -> int:
@@ -160,21 +174,32 @@ def sweep_orphan_browsers(*roots: Path, older_than_seconds: float = 1800,
                 continue
             candidates += 1
 
-            mine = False
             try:
-                if ours(Path(proc.cwd()).resolve()):
-                    mine = True
+                argv = proc.cmdline()
+            except (psutil.AccessDenied, OSError):
+                continue
+
+            # Two independent conditions, both required. Automation launched it, AND it was
+            # working in one of our directories. Either alone is not evidence: the person at the
+            # keyboard may have a browser open, and they may have started it from this repo.
+            automated = any(any(m in arg for m in AUTOMATION_MARKERS) for arg in argv)
+            if not automated:
+                continue
+
+            located = False
+            try:
+                located = ours(Path(proc.cwd()).resolve())
             except (psutil.AccessDenied, OSError, ValueError):
                 pass
-            if not mine:
-                # A Playwright browser is launched with its profile in a temp directory we
-                # created; the command line is the surviving evidence of who started it.
-                for arg in proc.cmdline():
-                    if arg.startswith("--user-data-dir=") and ours(
-                            Path(arg.split("=", 1)[1]).resolve()):
-                        mine = True
+            if not located:
+                for arg in argv:
+                    if arg.startswith("--user-data-dir="):
+                        try:
+                            located = ours(Path(arg.split("=", 1)[1]).resolve())
+                        except (OSError, ValueError):
+                            located = False
                         break
-            if not mine:
+            if not located:
                 continue
 
             proc.kill()
