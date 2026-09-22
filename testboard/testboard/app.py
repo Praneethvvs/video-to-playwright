@@ -23,8 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
-from . import (__version__, agent as agentmod, drift as driftmod, inventory, media,
-               preflight, retention)
+from . import (__version__, agent as agentmod, auth, drift as driftmod, ingest, inventory,
+               media, preflight, retention)
 from .config import Config
 from .db import Database
 from .executor import KIND_COLLECT, KIND_DRIFT, KIND_MAP, KIND_PYTEST, Executor
@@ -35,12 +35,48 @@ log = logging.getLogger("testboard.app")
 HERE = Path(__file__).parent
 
 
-def create_app(config: Config) -> FastAPI:
+def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
+    # Defaults to the loopback policy so a test or a script that builds the app directly
+    # behaves like a laptop rather than silently unauthenticated on a real interface.
+    policy = policy or auth.policy_for("127.0.0.1")
     database = Database(config.db_path)
     bus = LogBus()
     executor = Executor(config, database, bus)
 
     app = FastAPI(title=f"testboard — {config.repo_name}", docs_url=None, redoc_url=None)
+
+    @app.middleware("http")
+    async def authenticate(request: Request, call_next):
+        """Gate everything except the health probe and the static assets.
+
+        Static files and /healthz are exempt so a Kubernetes probe works without holding the
+        secret, and so the stylesheet loads on the page that asks for the token.
+        """
+        path = request.url.path
+        if not policy.requires_token or path == "/healthz" or path.startswith("/static/"):
+            return await call_next(request)
+
+        presented = auth.presented_token(request)
+        if auth.token_ok(policy, presented):
+            response = await call_next(request)
+            # Remembered for the session so a browser does not need the token in every URL.
+            # SameSite=Strict is what stops another site using this cookie to act as the user.
+            if presented and request.cookies.get(auth.COOKIE) != presented:
+                response.set_cookie(auth.COOKIE, presented, httponly=True, samesite="strict",
+                                    max_age=60 * 60 * 12)
+            return response
+
+        return PlainTextResponse(
+            "\n".join([
+                "testboard needs a token.",
+                "",
+                "  curl -H 'Authorization: Bearer <token>' ...",
+                "  or open  <this-url>/?token=<token>  once, and it is remembered for 12 hours.",
+                "",
+                "The token is the TESTBOARD_TOKEN this server was started with.",
+            ]) + "\n",
+            status_code=401, headers={"WWW-Authenticate": "Bearer"},
+        )
 
     @app.middleware("http")
     async def reject_cross_site_writes(request: Request, call_next):
@@ -178,9 +214,12 @@ def create_app(config: Config) -> FastAPI:
         latest = database.latest_results()
         quarantine = config.runner.markers.quarantine
         quarantined = [t for t in tests if quarantine in t["markers"]]
+        # Imported pipeline runs count. They are the most recent evidence of suite health on a
+        # deployment somebody actually cares about, and excluding them was what made this tile
+        # say "never" while the pipeline had been green for a month.
         last_run = database.one(
-            "SELECT * FROM runs WHERE kind = 'pytest' AND status NOT IN ('queued','running') "
-            "ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM runs WHERE kind IN ('pytest', 'ci') "
+            "AND status NOT IN ('queued','running') ORDER BY id DESC LIMIT 1"
         )
         # Outcomes are reported across the approved suite only. Mixing in tests nobody has
         # accepted yet makes "3 failed" mean something different from one day to the next.
@@ -309,7 +348,7 @@ def create_app(config: Config) -> FastAPI:
 
         result = executor.enqueue_pytest(
             target=target, label=label or target or "Whole suite",
-            markers=markers, requested_by=_who(request),
+            markers=markers, requested_by=auth.identity(request, policy),
         )
         if result.run_id is None:
             return RedirectResponse(f"/runs/{result.duplicate_of}", status_code=303)
@@ -319,7 +358,7 @@ def create_app(config: Config) -> FastAPI:
     async def start_job(request: Request, kind: str):
         if kind not in (KIND_DRIFT, KIND_MAP, KIND_COLLECT):
             return JSONResponse({"error": "unknown job"}, status_code=404)
-        result = executor.enqueue_job(kind, requested_by=_who(request))
+        result = executor.enqueue_job(kind, requested_by=auth.identity(request, policy))
         target_id = result.run_id or result.duplicate_of
         return RedirectResponse(f"/runs/{target_id}", status_code=303)
 
@@ -340,14 +379,14 @@ def create_app(config: Config) -> FastAPI:
         """Promote a draft into the suite, or reject it. Who decided is part of the record."""
         if state not in ("approved", "rejected", "pending"):
             return JSONResponse({"error": "unknown state"}, status_code=400)
-        database.decide(nodeid, state, _who(request))
+        database.decide(nodeid, state, auth.identity(request, policy))
         return RedirectResponse(back_to(request, "/tests"), status_code=303)
 
     @app.post("/tests/decide-all")
     async def decide_all(request: Request, state: str = Form(...), file: str = Form("")):
         if state not in ("approved", "rejected"):
             return JSONResponse({"error": "unknown state"}, status_code=400)
-        who = _who(request)
+        who = auth.identity(request, policy)
         for test in database.pending_tests():
             if not file or test["file"] == file:
                 database.decide(test["nodeid"], state, who)
@@ -357,7 +396,7 @@ def create_app(config: Config) -> FastAPI:
     async def refresh_inventory(request: Request):
         # Enqueued, not run here. Collecting starts a pytest process, and this handler is not
         # allowed to do that — see the executor's module docstring.
-        outcome = executor.enqueue_job(KIND_COLLECT, _who(request))
+        outcome = executor.enqueue_job(KIND_COLLECT, auth.identity(request, policy))
         database.set_meta("last_upload", [
             "Re-collecting tests. It will appear in Runs, and the list refreshes when it finishes."
             if outcome.run_id else "A re-collect is already queued."
@@ -424,7 +463,7 @@ def create_app(config: Config) -> FastAPI:
             try:
                 accepted = await media.accept(
                     config, database, filename=upload_file.filename or "upload",
-                    stream=upload_file, uploaded_by=_who(request), source_id=target,
+                    stream=upload_file, uploaded_by=auth.identity(request, policy), source_id=target,
                 )
                 # A video and its transcript arriving together belong to one recording, so the
                 # first file decides the source and the rest attach to it.
@@ -462,7 +501,7 @@ def create_app(config: Config) -> FastAPI:
         with candidate.open("rb") as handle:
             accepted = await media.accept(
                 config, database, filename=candidate.name, stream=_FileStream(handle),
-                uploaded_by=_who(request),
+                uploaded_by=auth.identity(request, policy),
             )
         return RedirectResponse(f"/recordings/{accepted.source_id}", status_code=303)
 
@@ -472,7 +511,7 @@ def create_app(config: Config) -> FastAPI:
         if row is None:
             return JSONResponse({"error": "no such recording"}, status_code=404)
         result = executor.enqueue_generation(
-            source_id, f"Generate tests from “{row['title']}”", _who(request),
+            source_id, f"Generate tests from “{row['title']}”", auth.identity(request, policy),
         )
         return RedirectResponse(f"/runs/{result.run_id or result.duplicate_of}", status_code=303)
 
@@ -563,6 +602,39 @@ def create_app(config: Config) -> FastAPI:
         guessed = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         return FileResponse(target, media_type=guessed, filename=target.name)
 
+    @app.post("/api/runs/junit")
+    async def import_junit(request: Request, file: UploadFile = File(...),
+                           label: str = Form(""), git_sha: str = Form(""),
+                           git_branch: str = Form(""), url: str = Form("")):
+        """Record a run that happened elsewhere — the pipeline, or testboard in the cluster.
+
+        Without this the Results column could only describe runs started in this interface, so it
+        said "never run from here" about tests the pipeline had been running green for weeks.
+
+        An import updates results and never approves anything: a pipeline is not a person, and
+        the approval record exists precisely to say which person decided.
+        """
+        try:
+            payload = await file.read()
+            result = ingest.junit(
+                database, xml=payload, label=label or (file.filename or "Pipeline run"),
+                requested_by=auth.identity(request, policy),
+                git_sha=git_sha or None, git_branch=git_branch or None,
+                source_url=url or None, state_dir=config.state_dir,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        finally:
+            await file.close()
+
+        return JSONResponse({
+            "run_id": result.run_id,
+            "run_url": f"/runs/{result.run_id}",
+            "totals": {k: v for k, v in result.totals.items() if k != "cases"},
+            "results_recorded": result.recorded,
+            "unmatched_cases": result.unknown,
+        })
+
     @app.get("/healthz", response_class=PlainTextResponse)
     async def healthz():
         return "ok"
@@ -577,25 +649,5 @@ def _sse(seq: int, line: str) -> str:
     return f"id: {seq}\ndata: {payload}\n\n"
 
 
-USER_HEADER_OK = re.compile(r"^[\w.@+-]{1,64}$")
-
-
-def _who(request: Request) -> str:
-    """Who to record against a run or an approval.
-
-    An authenticating proxy in front of this sets one of these headers. The value is sanity-
-    checked rather than trusted verbatim: it lands in an audit field that is meant to answer
-    "who approved this test", and a 4 KB header or one full of markup would make that record
-    useless or actively misleading.
-
-    With nothing in front, a loopback caller is recorded as "local" rather than "you" — "you"
-    reads as a name in an audit trail and is not one.
-    """
-    forwarded = (request.headers.get("x-forwarded-user")
-                 or request.headers.get("x-remote-user") or "").strip()
-    if forwarded and USER_HEADER_OK.match(forwarded):
-        return forwarded
-    if forwarded:
-        log.warning("ignoring an implausible user header: %r", forwarded[:80])
-    client = request.client.host if request.client else "unknown"
-    return "local" if client in ("127.0.0.1", "::1") else client
+# Identity now lives in auth.identity(), which knows the policy in force and can therefore tell
+# "the only person who could reach loopback" apart from "somebody holding the shared token".

@@ -118,6 +118,34 @@ back to anything. The page says to continue in your own Codex session, open a pu
 let the merged tests arrive here as pending. That keeps every answer attached to a commit and a
 review, which is where an answer of that kind belongs.
 
+## Who can use it
+
+There is no login, and there is not going to be one. What there is instead is a policy decided
+by where it listens, so it cannot be left in an unsafe state by forgetting a setting:
+
+| | |
+|---|---|
+| loopback, no token | everyone is `local`. Only somebody already on the machine can reach it |
+| any address, token set | every request must present it |
+| token **and** an authenticating proxy | the token authorises the proxy; the proxy's `X-Forwarded-User` becomes the recorded name |
+
+**Listening on a non-loopback address without a token is refused at startup.** Not warned about —
+refused, with the command to generate one. A warning printed into a log nobody reads is how an
+unauthenticated endpoint that can mutate a shared environment ends up on a cluster network.
+
+```bash
+TESTBOARD_TOKEN=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
+python -m testboard --host 0.0.0.0
+```
+
+A browser can be given the token once as `?token=…` and it is remembered in a `SameSite=Strict`
+cookie for twelve hours. `/healthz` and `/static/` stay open so a Kubernetes probe works without
+the secret and the stylesheet loads on the page asking for it.
+
+The token authenticates; it does not identify. Every holder is recorded identically as
+`token@<address>`, which is honest and not much use in an audit trail — so if "who approved this
+test" needs to mean something, front it with a proxy that sets a user header.
+
 ## Local development, cluster execution
 
 Writing tests wants a fast local loop: edit, click re-run, read the output in seconds. Running them
@@ -130,10 +158,32 @@ application and the same database file.
 | state | `.testboard/` in your checkout | the same path, on a PersistentVolumeClaim |
 | credential | your `codex login` | `CODEX_API_KEY` from a Secret |
 
-One caveat stated plainly rather than buried: **the Results column counts runs started through
-testboard.** A run in the Azure DevOps pipeline does not appear there. Consolidating those means
-either running the suite through the in-cluster testboard instead, or teaching it to ingest the
-pipeline's JUnit XML — which is not built.
+### Runs that happened elsewhere
+
+A pipeline posts its JUnit report when it finishes, so the dashboard reflects what ran in the
+cluster and not only what somebody started in its own interface:
+
+```bash
+curl -H "Authorization: Bearer $TESTBOARD_TOKEN" \
+     -F "file=@test-results.xml" \
+     -F "label=$(Build.DefinitionName) #$(Build.BuildId)" \
+     -F "git_sha=$(Build.SourceVersion)" \
+     "$TESTBOARD_URL/api/runs/junit"
+```
+
+`.pipelines/ci.yaml` does this already, guarded so that a dashboard being down never fails a
+green suite.
+
+Imported runs are recorded as `kind='ci'` and stay visibly distinct: no log to stream, no
+artifacts to prune, no process that was ever ours, and the run page says so rather than showing
+an empty log panel. Two things they deliberately do **not** do:
+
+- **They never approve a test.** A pipeline is not a person, and the approval record exists to
+  say which person decided.
+- **They never add to the inventory.** A nodeid in the report that this checkout has never
+  collected is listed as unmatched and otherwise ignored — the pipeline may be on a branch whose
+  tests do not exist here, and inventing rows from a remote report would put tests on the
+  dashboard that nobody can find or run.
 
 ## What it will not do
 

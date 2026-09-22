@@ -91,6 +91,15 @@ spec:
                   name: testboard-codex          # kubectl create secret generic testboard-codex \
                   key: api-key                   #   --from-literal=api-key=sk-...
                   optional: true                 # absent = generation reports itself unavailable
+            # REQUIRED, and enforced: testboard refuses to start on a non-loopback address
+            # without it. It can start runs that change data in a shared environment and has no
+            # login of its own, so a warning would not be good enough.
+            #   python -c "import secrets;print(secrets.token_urlsafe(32))"
+            - name: TESTBOARD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: testboard-codex
+                  key: dashboard-token
             # Uncomment with the volume below if the cluster sits behind TLS interception.
             # - name: SSL_CERT_FILE
             #   value: /etc/ssl/corporate/ca-bundle.pem
@@ -131,15 +140,19 @@ spec:
     - {port: 80, targetPort: http, name: http}
 
 # ---------------------------------------------------------------------------------------------
-# DECIDE BEFORE EXPOSING THIS. No Ingress is included on purpose.
+# No Ingress is included on purpose — decide how this is reached before exposing it.
 #
-# Anyone who can reach this can start a run that mutates the shared environment, and can read
-# every trace and log it has captured. It has no authentication of its own and is not going to
-# grow any: that belongs at the ingress, using whatever the cluster already uses for the
-# application itself.
+# The container above is authenticated by TESTBOARD_TOKEN, and testboard will not start on a
+# non-loopback address without one. That stops anything on the cluster network pressing its
+# buttons. It is not the same as knowing who pressed them: every token holder is recorded
+# identically, as `token@<address>`.
 #
-# Until that is settled, reach it with:
+# For a real audit trail — the whole point of recording who approved a test — put an
+# authenticating proxy in front and have it set X-Forwarded-User. testboard prefers that header
+# over the token identity, validates it, and records the name against approvals and runs.
+#
+# Simplest safe start, needing no ingress at all:
 #     kubectl port-forward svc/testboard 8770:80
 #
-# testboard reads X-Forwarded-User / X-Remote-User for the "who started this run" column, so an
-# authenticating proxy that sets one of those gets attribution for free.
+# The pipeline posts its JUnit report to /api/runs/junit with the same token. That is what makes
+# a run executed here appear on the dashboard instead of "never run from here".
