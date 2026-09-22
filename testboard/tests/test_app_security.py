@@ -164,6 +164,24 @@ def test_the_referer_cannot_steer_the_redirect_off_site(open_client, referer):
     assert not location.lower().startswith("javascript:")
 
 
+def test_a_protocol_relative_path_is_not_a_redirect_target(open_client):
+    """The hole the netloc check left open.
+
+    "http://testserver//evil.example.com/x" parses with *our* netloc and a path of
+    "//evil.example.com/x". That path in a Location header is protocol-relative, so the browser
+    leaves for evil.example.com — past a check that only looked at the netloc.
+    """
+    response = open_client.post(
+        "/inventory/refresh",
+        headers={"Sec-Fetch-Site": "same-origin",
+                 "Referer": "http://testserver//evil.example.com/x"},
+        follow_redirects=False,
+    )
+    location = response.headers["location"]
+    assert not location.startswith("//"), f"protocol-relative Location: {location}"
+    assert location.startswith("/")
+
+
 def test_a_same_origin_referer_is_honoured(open_client):
     response = open_client.post(
         "/inventory/refresh",
@@ -186,3 +204,63 @@ def test_the_cookie_is_set_httponly_and_strict(guarded_client):
     cookie = response.headers.get("set-cookie", "")
     assert "httponly" in cookie.lower()
     assert "samesite=strict" in cookie.lower().replace(" ", "")
+
+
+# --- upload limits ----------------------------------------------------------------------------
+def test_an_oversized_report_is_refused_without_being_held_whole(open_client, monkeypatch):
+    """The limit has to bind while reading, not after.
+
+    The route used to `await file.read()` and only then compare the length, so the one thing the
+    limit existed to prevent — an oversized report resident in the process — had already
+    happened by the time it was refused.
+    """
+    import asyncio
+
+    from testboard import app as app_module, ingest
+
+    # The mechanism, asserted directly: it must stop asking for chunks once it is over.
+    class Endless:
+        """An upload that never ends. Reading it whole is not an option."""
+
+        def __init__(self):
+            self.served = 0
+
+        async def read(self, n=-1):
+            self.served += n
+            return b"x" * n
+
+    upload = Endless()
+    with pytest.raises(ValueError, match="larger than"):
+        asyncio.run(app_module._read_capped(upload, 64 * 1024, chunk=8 * 1024))
+    assert upload.served <= 64 * 1024 + 8 * 1024, (
+        f"kept reading past the limit: {upload.served} bytes"
+    )
+
+    # And the route refuses rather than 500-ing on the ValueError.
+    monkeypatch.setattr(ingest, "MAX_XML_BYTES", 64 * 1024)
+    payload = b"<testsuite>" + b"x" * (256 * 1024) + b"</testsuite>"
+    response = open_client.post(
+        "/api/runs/junit",
+        headers={"Sec-Fetch-Site": "same-origin"},
+        files={"file": ("big.xml", payload, "application/xml")},
+    )
+    assert response.status_code == 400
+    assert "limit" in response.json()["error"]
+
+
+def test_a_report_at_the_limit_is_still_accepted(open_client, monkeypatch):
+    from testboard import ingest
+
+    monkeypatch.setattr(ingest, "MAX_XML_BYTES", 4096)
+    body = (
+        '<testsuite name="s" tests="1" failures="0" errors="0" skipped="0" time="0.1">'
+        '<testcase classname="tests.test_x" name="test_one" time="0.1"/>'
+        "</testsuite>"
+    ).encode()
+    assert len(body) < 4096
+    response = open_client.post(
+        "/api/runs/junit",
+        headers={"Sec-Fetch-Site": "same-origin"},
+        files={"file": ("small.xml", body, "application/xml")},
+    )
+    assert response.status_code == 200, response.text

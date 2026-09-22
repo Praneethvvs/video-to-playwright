@@ -48,7 +48,11 @@ CREATE TABLE IF NOT EXISTS runs (
     git_branch        TEXT,
     git_subject       TEXT,
     git_author        TEXT,
-    git_dirty         INTEGER
+    git_dirty         INTEGER,
+    -- What a generation run changed in the working tree, as JSON. Recorded because the approval
+    -- gate only ever saw *new* tests: an agent that rewrote or deleted an existing test narrowed
+    -- the suite and nothing on any screen said so.
+    changes_json      TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_status   ON runs(status);
 CREATE INDEX IF NOT EXISTS runs_target   ON runs(kind, target, id DESC);
@@ -158,6 +162,7 @@ class Database:
             "runs": {
                 "git_sha": "TEXT", "git_branch": "TEXT", "git_subject": "TEXT",
                 "git_author": "TEXT", "git_dirty": "INTEGER",
+                "changes_json": "TEXT",
             },
             "inventory": {
                 "state": "TEXT NOT NULL DEFAULT 'pending'", "decided_by": "TEXT",
@@ -245,6 +250,26 @@ class Database:
             "INSERT INTO runs(kind, target, label, status, requested_at, destructive, "
             "timeout_seconds, requested_by) VALUES(?, ?, ?, 'queued', ?, ?, ?, ?)",
             (kind, target, label, utcnow(), int(destructive), timeout_seconds, requested_by),
+        )
+
+    def record_finished_run(self, *, kind: str, label: str, requested_by: str,
+                            status: str, **fields: Any) -> int:
+        """Insert a run that is already over, without going through the queue.
+
+        An imported pipeline result is not work to be done. Creating it with `enqueue` gave it
+        status 'queued', which put a row the worker cannot execute at the head of the queue — it
+        would dequeue it, fail to build a command for an unknown kind, and mark it errored,
+        overwriting the results that had just been imported.
+        """
+        columns = ["kind", "target", "label", "status", "requested_at", "destructive",
+                   "timeout_seconds", "requested_by"]
+        values = [kind, "", label, status, utcnow(), 0, 0, requested_by]
+        for key, value in fields.items():
+            columns.append(key)
+            values.append(value)
+        placeholders = ", ".join("?" for _ in columns)
+        return self.execute(
+            f"INSERT INTO runs({', '.join(columns)}) VALUES({placeholders})", values
         )
 
     def next_queued(self) -> sqlite3.Row | None:
@@ -343,9 +368,17 @@ class Database:
                 )
             self._conn.commit()
 
-        # Recorded only once something was actually collected. An empty collection must not count
-        # as "the baseline has been taken", or the next one inherits that claim.
-        if items and not established and origin != "generated":
+        # Recorded after ANY successful non-empty collection, including a generation pass.
+        #
+        # The two questions are separate and were tangled together. "Has a baseline been taken"
+        # is about whether this database has ever seen the repository's tests — a generation pass
+        # sees them, so it answers yes. "May this pass approve what it finds" is about provenance,
+        # and a generation pass may not. Gating the marker on origin as well left the baseline
+        # unestablished after a generation run, so the next ordinary collection decided it was
+        # the first one and approved everything, the agent's unread tests included.
+        #
+        # An empty collection still does not count: nothing was seen, so nothing is established.
+        if items and not established:
             self.set_meta("baseline_established", True)
         return new_ids
 

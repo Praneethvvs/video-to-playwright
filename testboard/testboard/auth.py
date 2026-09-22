@@ -5,14 +5,19 @@ captured. On a laptop, binding to loopback is a complete answer: only someone al
 machine can reach it. In a cluster it is no answer at all, and "we will put something in front of
 it" is the sort of intention that does not survive a deadline.
 
-So there are three modes, and the one in force is decided by where it is listening rather than by
-a setting somebody might forget:
+There are two modes, decided by where it is listening rather than by a setting somebody might
+forget:
 
 | | |
 |---|---|
 | `trusted` | bound to loopback with no token set. Everyone is "local" |
 | `token`   | a shared token is configured. Every request must present it |
-| `proxy`   | an authenticating proxy in front sets a user header, and the token authorises the proxy itself |
+
+An authenticating proxy is not a third mode; it is `token` plus a header. The token authorises the
+proxy, and the proxy's `X-Forwarded-User` becomes the recorded name. That header is read **only**
+in `token` mode: in `trusted` mode nothing is in front of this, so it could only have come from the
+caller, and letting a caller name themselves in the field recording who approved a test would make
+that record worthless.
 
 The rule that matters: **listening on a non-loopback address without a token is refused at
 startup.** Not warned about — refused. A warning printed at 2am into a log nobody reads is how an
@@ -140,12 +145,16 @@ def identity(request, policy: Policy) -> str:
     indistinguishable from any other token holder, and saying so is more honest than inventing a
     name: "token" is a worse audit entry than a username and a better one than a guess.
     """
-    for name in USER_HEADERS:
-        value = (request.headers.get(name) or "").strip()
-        if value and USER_OK.match(value):
-            return value
-        if value:
-            log.warning("ignoring an implausible %s header: %r", name, value[:80])
+    # Only in token mode. In trusted mode there is no proxy in front by definition, so the
+    # header can only have come from whoever made the request — and letting a caller name
+    # themselves in the field that records who approved a test makes that record worthless.
+    if policy.requires_token:
+        for name in USER_HEADERS:
+            value = (request.headers.get(name) or "").strip()
+            if value and USER_OK.match(value):
+                return value
+            if value:
+                log.warning("ignoring an implausible %s header: %r", name, value[:80])
 
     client = request.client.host if request.client else "unknown"
     if policy.mode == "trusted":

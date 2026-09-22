@@ -94,6 +94,50 @@ def test_an_ambiguous_name_is_not_attributed(db, tmp_path):
     assert result.recorded == 0, "an ambiguous case was attributed to one of two candidates"
 
 
+def test_a_foreign_file_is_never_matched_by_function_name(db, tmp_path):
+    """The false-green case.
+
+    A report naming a file this checkout has never collected must not be recorded against
+    whatever local test happens to share the function name. That fired precisely when the
+    pipeline's layout differed — the case the caller most needs told about — and turned "we could
+    not match this" into "that test is passing".
+    """
+    result = ingest.junit(
+        db, xml=junit([("suite.smoke.test_checkout", "test_renders[chromium]", "")]),
+        label="pipeline", requested_by="ci", state_dir=tmp_path)
+    assert result.recorded == 0, "a foreign file was matched on function name alone"
+    assert result.unknown, "and it was not even reported as unmatched"
+    assert db.latest_results() == {}
+
+
+def test_a_name_containing_a_separator_cannot_address_a_nodeid(db, tmp_path):
+    """A hand-shaped report must not be able to nominate the test it marks as passing."""
+    db.replace_inventory(KNOWN + [
+        {"nodeid": "e2e/tests/test_login.py::TestSession::test_expiry",
+         "file": "e2e/tests/test_login.py", "name": "test_expiry", "markers": []}],
+        origin="merged")
+    result = ingest.junit(
+        db, xml=junit([("", "TestSession::test_expiry", "")]),
+        label="pipeline", requested_by="ci", state_dir=tmp_path)
+    assert result.recorded == 0
+    assert "TestSession::test_expiry" not in db.latest_results()
+
+
+def test_an_empty_classname_is_not_guessed_at(db, tmp_path):
+    result = ingest.junit(db, xml=junit([("", "test_renders[chromium]", "")]),
+                          label="pipeline", requested_by="ci", state_dir=tmp_path)
+    assert result.recorded == 0
+
+
+def test_the_same_file_under_a_different_root_is_still_matched(db, tmp_path):
+    """The one rescue that is safe: the file agrees, only the prefix differs."""
+    result = ingest.junit(
+        db, xml=junit([("tests.e2e.tests.test_dash", "test_renders[chromium]", "")]),
+        label="pipeline", requested_by="ci", state_dir=tmp_path)
+    assert result.recorded == 1
+    assert KNOWN[0]["nodeid"] in db.latest_results()
+
+
 def test_failures_are_carried_through(db, tmp_path):
     xml = junit([("e2e.tests.test_dash", "test_renders[chromium]",
                   '<failure message="boom">trace</failure>')], failures=1)
