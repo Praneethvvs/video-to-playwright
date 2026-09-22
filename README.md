@@ -44,26 +44,118 @@ git clone https://github.com/Praneethvvs/video-to-playwright.git ~/.claude/skill
 > Here's a recording of our release checks: `~/recordings/checkout-flow.mp4`, and the transcript.
 > I need Playwright tests for this.
 
-### Codex, or any other agent
+### Codex
 
-Clone it anywhere, then **point the agent at the workflow explicitly** — Codex does not auto-load skill
-files the way Claude Code does, so it needs the instruction:
+Codex **does not auto-discover skill files**, so the "read it and follow it" instruction is doing real
+work. Without it you get a generic attempt rather than the workflow.
 
 ```bash
 git clone https://github.com/Praneethvvs/video-to-playwright.git
+codex
 ```
 
 > Read `video-to-playwright/SKILL.md` and follow it. Here's the recording:
 > `recordings/checkout-flow.mp4`, and the transcript: `recordings/checkout-flow.vtt`.
 
-`AGENTS.md` carries the always-on rules for Codex sessions, so cloning this *into* a project picks those
+`AGENTS.md` carries the always-on rules for Codex sessions, so cloning this *into* a project picks them
 up automatically. The YAML frontmatter at the top of `SKILL.md` is Claude Code's discovery metadata and
 is inert elsewhere.
 
-**[`references/running-with-codex.md`](references/running-with-codex.md)** has the verified detail:
-the `codex exec` flags for unattended runs, where the binary hides on Windows, and the
-argument-quoting trap that silently breaks multi-line prompts. This path has been run end to end, not
-assumed.
+#### Unattended, with `codex exec`
+
+A full run takes tens of minutes, so this is usually what you want:
+
+```bash
+codex exec -C <workdir> -s danger-full-access --skip-git-repo-check \
+  -o last-message.txt \
+  "Read TASK.md in this directory and carry it out exactly."
+```
+
+| Flag | Why |
+|---|---|
+| `-C <dir>` | Working directory; everything resolves relative to it |
+| `-s <policy>` | Sandbox policy — **see the trap below, the obvious choice is wrong** |
+| `--skip-git-repo-check` | Required when the working directory is not a git repo |
+| `-o <file>` | Writes the final message to a file, so an unattended run leaves a readable outcome |
+| `--json` | Streams structured events, to watch progress programmatically |
+
+#### Two traps that each cost a full run
+
+**1. `workspace-write` is not enough, and failing looks like passing.**
+
+It sounds sufficient — the workflow writes frames and test files. But the whole point is verifying
+locators against the *running application*, which means launching a browser and reaching the app over
+the network. Under `workspace-write` that fails with `WinError 5: Access is denied` on Windows.
+
+What makes this expensive is how it presents. A blocked run produces a suite of tests that are all
+**skipped**, a project map with every route **unreachable**, and **exit code 0**. The output is honest
+about being blocked; the exit code invites you to read it as a pass.
+
+```bash
+codex exec -s danger-full-access ...                                        # sandbox elsewhere: a container, a VM
+codex exec -s workspace-write -c 'sandbox_permissions=["disk-full-read-access"]' ...   # or grant what is needed
+```
+
+> **Before believing any run succeeded, check two things:** the project map has reachable routes, and
+> the test run reports passes rather than skips.
+
+**2. Put the task in a file, never in the argument.**
+
+A multi-line prompt passed as a shell argument gets split on whitespace and its fragments parsed as
+flags. From PowerShell, a here-string prompt containing blank lines and hyphens produced:
+
+```
+error: unexpected argument 'a' found
+```
+
+That is an argument-quoting problem rather than a Codex bug, and it wastes a run before you notice.
+Write a `TASK.md` and pass a one-line prompt pointing at it:
+
+```markdown
+# Task
+
+Read `video-to-playwright/SKILL.md` in this directory and follow it.
+
+**The request:** "Here's a recording of our release checks: `recordings/checkout.mp4`, and the
+transcript `recordings/checkout.vtt`. I need a Playwright suite, and a video I can show the tester."
+
+**Environment:** `python` here has `imageio-ffmpeg` installed. <Say whether a human is available to
+answer questions, and whether the agent may create and delete data in the target environment.>
+
+## Deliverables
+1. The test suite  2. A passing test run  3. The walkthrough video  4. The traceability matrix
+```
+
+A task file is better practice anyway: it records exactly what was asked, which matters when comparing
+runs or re-running after a change.
+
+#### Finding the binary on Windows
+
+`codex` is frequently not on `PATH` even when installed:
+
+```
+%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe
+```
+
+The `<hash>` changes between versions, so glob for it rather than hardcoding. A `~/.codex/` holding
+`config.toml` and `plugins/` is a reliable sign it is installed even when the launcher isn't findable.
+Run `codex login status` before starting a long job.
+
+#### Two things to state that the agent cannot work out
+
+- **Whether a human is available to answer questions.** The workflow batches questions to a person at
+  checkpoints. If nobody is there it should deliver what it can and list the rest rather than stall.
+- **Whether it may create and delete data in the target environment**, and what naming convention to
+  use so anything left behind is identifiable.
+
+**[`references/running-with-codex.md`](references/running-with-codex.md)** has the rest: what a real
+run looked like end to end, and which behaviours to watch for when evaluating a different agent.
+
+### Any other agent
+
+The mechanics are plain file reads and shell commands, so nothing here is Claude- or Codex-specific.
+Point the harness at `SKILL.md` the same way, and check the same two things before believing a run
+passed.
 
 ### Without any model at all
 
