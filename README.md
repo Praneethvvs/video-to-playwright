@@ -33,49 +33,162 @@ narration can only be matched to frames by content — slower and less certain.
 
 ## 2. Run it
 
-Both paths do the same thing. The only difference is that Claude Code finds the skill by itself and
-Codex has to be told.
-
-**Claude Code**
+### Claude Code
 
 ```bash
 git clone https://github.com/Praneethvvs/video-to-playwright.git ~/.claude/skills/video-to-playwright
 ```
 
-Then just ask, naming the five inputs:
+It discovers the skill itself. Just ask, naming the five inputs:
 
 > Turn `recordings/checkout.mp4` + `recordings/checkout.vtt` into Playwright tests.
-> Test repo `~/work/checkout-e2e`, app repo `~/work/checkout-ui`, dev URL `https://checkout.dev.example.com`.
-> Tests may create and delete their own data.
+> Test repo `~/work/checkout-e2e`, app repo `~/work/checkout-ui`, dev URL
+> `https://checkout.dev.example.com`. Tests may create and delete their own data.
 
-**Codex**
+### Codex
+
+A full run takes tens of minutes, so `codex exec` is the way to run it. The request goes in a file
+rather than on the command line — see [why](#why-the-task-goes-in-a-file).
+
+**Step 1.** Clone the workflow into the directory you want to work from:
 
 ```bash
+cd ~/work/checkout-run
 git clone https://github.com/Praneethvvs/video-to-playwright.git
-codex
 ```
 
-Then the same request, prefixed with the instruction to read the workflow — Codex does not
-auto-discover skill files, and without this you get a generic attempt instead:
+**Step 2.** Copy the task template into that same directory and fill it in:
 
-> Read `video-to-playwright/SKILL.md` and follow it. Turn `recordings/checkout.mp4` + …
+```bash
+cp video-to-playwright/assets/TASK.template.md TASK.md
+```
 
-For unattended runs see [Running unattended](#running-unattended) below — there are two traps that
-each cost a full run.
+Open `TASK.md` and replace the five inputs with your own paths. It is commented throughout, and the
+placeholders are the questions the agent would otherwise have to ask or guess at. Nothing else needs
+editing.
 
-## 3. What happens, in order
+**Step 3.** Run it:
 
-| | Step | You are involved |
-|---|---|---|
-| 1 | Reads the transcript, probes the video, pulls frames | — |
-| 2 | Reads both repos: language, runner, layout, existing page objects | — |
-| 3 | Captures or checks `project-map.json`, a structural baseline of the app | — |
-| 4 | Drafts a plain-language spec in `specs/`, with gaps left as gaps | — |
-| 5 | **Asks you a batch of questions** | **yes — ~30 min** |
-| 6 | Verifies every locator against the running app | — |
-| 7 | Writes the tests and runs them until green | — |
-| 8 | Records the walkthrough video | — |
-| 9 | **Asks anything still unresolved**, then opens a PR | **yes** |
+```bash
+codex exec -C . -s danger-full-access --skip-git-repo-check \
+  -o last-message.txt \
+  "Read TASK.md in this directory and carry it out exactly."
+```
+
+| Flag | Why |
+|---|---|
+| `-C <dir>` | Working directory; `TASK.md` and every path in it resolve relative to this |
+| `-s <policy>` | Sandbox policy — **the obvious choice is wrong, see below** |
+| `--skip-git-repo-check` | Required when the working directory is not itself a git repo |
+| `-o <file>` | Writes the final message to a file, so an unattended run leaves a readable outcome |
+
+**Step 4.** Read `last-message.txt` and check two numbers before believing it passed — see
+[Checking a run actually passed](#checking-a-run-actually-passed).
+
+Prefer to drive it by hand? Run `codex` interactively and paste the contents of your `TASK.md` as
+the first message. Same result, but you have to sit with it.
+
+#### The sandbox must allow a browser and the network
+
+`workspace-write` sounds sufficient — the workflow writes frames and test files. It is not. The
+whole point is verifying locators against the *running* application, which means launching a browser
+and reaching it over the network. Under `workspace-write` that fails with `WinError 5: Access is
+denied` on Windows.
+
+```bash
+codex exec -s danger-full-access ...                                                   # sandbox elsewhere: a container, a VM
+codex exec -s workspace-write -c 'sandbox_permissions=["disk-full-read-access"]' ...   # or grant what is needed
+```
+
+#### Checking a run actually passed
+
+A blocked run produces all-**skipped** tests, a project map with every route **unreachable**, and
+**exit code 0**. The output is honest about being blocked; the exit code invites reading it as a
+pass. `TASK.md` asks the agent to state both numbers, so:
+
+```bash
+grep -iE "reachable|skipped|passed" last-message.txt
+```
+
+Routes reachable, and passes rather than skips. If you see skips and unreachable routes, the sandbox
+blocked it — nothing was actually verified.
+
+#### Why the task goes in a file
+
+A multi-line prompt passed as a shell argument gets split on whitespace and its fragments parsed as
+flags. From PowerShell, a here-string prompt containing blank lines and hyphens produced:
+
+```
+error: unexpected argument 'a' found
+```
+
+That is an argument-quoting problem rather than a Codex bug, and it wastes a full run before you
+notice. A task file is better practice anyway: it records exactly what was asked, which matters when
+comparing runs or re-running after a change.
+
+#### Finding the binary on Windows
+
+`codex` is frequently not on `PATH` even when installed:
+`%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe` — the `<hash>` changes between versions, so glob
+for it rather than hardcoding. Run `codex login status` before starting a long job.
+
+[`references/running-with-codex.md`](references/running-with-codex.md) has the rest.
+
+## 3. The steps
+
+1. Probe the video and read the transcript
+2. Extract frames
+3. Read both repos
+4. Capture or check the project map
+5. Draft the spec
+6. **Ask you a batch of questions** — about 30 minutes
+7. Build the locator vocabulary from the app source
+8. Verify every locator against the running app
+9. Write the tests
+10. Run them until green
+11. Record the walkthrough video
+12. **Ask anything still unresolved**, then open a pull request
+
+Steps 6 and 12 are the only ones that need you.
+
+### What each step does
+
+**1. Probe the video and read the transcript.** Checks the audio actually contains speech — a silent
+recording cannot produce assertions, and it says so rather than proceeding. Parses the transcript
+into timestamped, attributed utterances.
+
+**2. Extract frames.** Scene detection tuned to the recording, plus uniform coverage so nothing is
+missed between scene changes, plus a report of gaps where it is unsure.
+
+**3. Read both repos.** The test repo for its language, runner, layout and existing page objects;
+the app repo for how elements are actually addressed in code. The app repo is never written to.
+
+**4. Capture or check the project map.** A structural baseline of the running app — routes, roles,
+names. If one exists it checks for drift first, because drift found up front is a fact you can
+report, while the same drift found halfway through writing a suite looks like your locators are
+wrong and sends you hunting a bug that does not exist.
+
+**5. Draft the spec.** A plain-language description in `specs/`: preconditions, numbered steps, and
+assertions quoted from the narration. Gaps are left as gaps rather than filled in.
+
+**6. Ask you a batch of questions.** See [When it asks questions](#when-it-asks-questions).
+
+**7. Build the locator vocabulary.** From the application source, not from the video — pixels carry
+no roles or test-ids.
+
+**8. Verify every locator against the running app.** The rule the whole method exists for. A locator
+that has not been executed does not go in a test.
+
+**9. Write the tests.** Page objects for intent, a helpers module for framework quirks, fixtures for
+setup, so a broken selector is a one-line fix.
+
+**10. Run them until green.** Real passes. A skipped test is not a passing test.
+
+**11. Record the walkthrough video.** One continuous take at viewport resolution, in the recording's
+order, so the person who made the original can confirm it without reading code.
+
+**12. Hand off.** A traceability matrix, the open-questions list, and a pull request against the test
+repo.
 
 ### When it asks questions
 
@@ -88,8 +201,8 @@ roughly three per checkpoint in the flow:
 - **Where did this data come from?** The recording shows the result of setup it never captured.
 - **What would you have called a failure?**
 
-If **nobody is available**, say so up front. It will deliver what it can and list the rest as open
-questions rather than stalling — or guessing, which it will not do.
+If **nobody is available**, say so — `TASK.md` has a field for it. It will deliver everything that is
+not blocked and list the rest as open questions rather than stalling.
 
 **It will not invent an assertion to fill a gap.** If the narration never says what "correct" means,
 that becomes an open question, and if nobody answers it, an honest hole in the traceability matrix.
@@ -141,41 +254,6 @@ true — exactly one option selected, three rows present — and assert it. *Tru
 requirement. Nobody asked for it, nobody recognises it when it breaks, and on shared data it will
 break with no defect present.
 
-## Running unattended
-
-```bash
-codex exec -C <workdir> -s danger-full-access --skip-git-repo-check \
-  -o last-message.txt \
-  "Read TASK.md in this directory and carry it out exactly."
-```
-
-| Flag | Why |
-|---|---|
-| `-C <dir>` | Working directory; everything resolves relative to it |
-| `-s <policy>` | Sandbox policy — **the obvious choice is wrong, see below** |
-| `--skip-git-repo-check` | Required when the working directory is not a git repo |
-| `-o <file>` | Writes the final message to a file, so the run leaves a readable outcome |
-
-**Trap 1: `workspace-write` is not enough, and failing looks like passing.** The workflow's whole
-point is verifying locators against the running app, which needs to launch a browser and reach the
-network. Under `workspace-write` that fails with `WinError 5: Access is denied` on Windows — and a
-blocked run produces all-**skipped** tests, a map with every route **unreachable**, and **exit code
-0**. The output is honest about being blocked; the exit code invites reading it as a pass.
-
-> **Before believing any run passed, check two things:** the project map has reachable routes, and
-> the tests report passes rather than skips.
-
-**Trap 2: put the task in a file, never in the argument.** A multi-line prompt passed as a shell
-argument gets split on whitespace and its fragments parsed as flags — from PowerShell that produced
-`error: unexpected argument 'a' found`. Write a `TASK.md` naming the five inputs and pass a one-line
-prompt pointing at it.
-
-**Finding the binary on Windows.** `codex` is often not on `PATH`:
-`%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe` — the `<hash>` changes between versions, so glob
-for it. Run `codex login status` before a long job.
-
-[`references/running-with-codex.md`](references/running-with-codex.md) has the rest.
-
 ## Requirements
 
 - An agent harness that can read files and run shell commands — Claude Code, Codex, or another
@@ -202,7 +280,11 @@ scripts/
   read_transcript.py              .vtt/.srt/.docx/.txt/.md -> attributed, timestamped utterances
   build_project_map.py            capture the structural baseline of the running app
   check_drift.py                  compare the app against that baseline
-assets/                           conftest, page-object and walkthrough templates
+assets/
+  TASK.template.md                copy to TASK.md and fill in, for unattended Codex runs
+  conftest.template.py            fixtures, with a comment per setting explaining what it prevents
+  page_object.template.py         page-object shape
+  walkthrough.template.py         the walkthrough recorder
 tests/                            the transcript parser's own tests
 docs/usage.html                   the same guide, formatted for sharing
 ```
