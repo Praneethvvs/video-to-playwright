@@ -12,7 +12,9 @@ import asyncio
 import json
 import logging
 import mimetypes
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
@@ -25,7 +27,7 @@ from . import (__version__, agent as agentmod, drift as driftmod, inventory, med
                preflight, retention)
 from .config import Config
 from .db import Database
-from .executor import KIND_DRIFT, KIND_MAP, KIND_PYTEST, Executor
+from .executor import KIND_COLLECT, KIND_DRIFT, KIND_MAP, KIND_PYTEST, Executor
 from .streaming import LogBus
 
 log = logging.getLogger("testboard.app")
@@ -39,8 +41,59 @@ def create_app(config: Config) -> FastAPI:
     executor = Executor(config, database, bus)
 
     app = FastAPI(title=f"testboard — {config.repo_name}", docs_url=None, redoc_url=None)
+
+    @app.middleware("http")
+    async def reject_cross_site_writes(request: Request, call_next):
+        """Refuse a state-changing request that another site caused the browser to make.
+
+        There is no authentication here, so the browser's own cookies are not the thing being
+        abused — the browser's *reachability* is. Any page the user has open can auto-submit a
+        hidden form to 127.0.0.1:8770 and approve a test under their name, start a destructive
+        run, or delete a recording. Every mutation is a plain form POST, so nothing about the
+        request shape prevents that.
+
+        `Sec-Fetch-Site` is sent by every current browser and is not forgeable by page script,
+        which makes it the cheapest correct defence. Where it is absent (an older browser, curl,
+        the pipeline) the Origin header is checked instead, and a request with neither is allowed
+        through — refusing those would break every script and give no security, since an attacker
+        controls neither header from a page anyway.
+        """
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            site = request.headers.get("sec-fetch-site")
+            if site and site not in ("same-origin", "same-site", "none"):
+                return PlainTextResponse(
+                    f"Refused: this {request.method} came from another site "
+                    f"(Sec-Fetch-Site: {site}). testboard only accepts changes made from its own "
+                    f"pages.", status_code=403,
+                )
+            if not site:
+                origin = request.headers.get("origin")
+                if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+                    return PlainTextResponse(
+                        f"Refused: Origin {origin} is not this application.", status_code=403,
+                    )
+        return await call_next(request)
+
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=str(HERE / "templates"))
+
+    def back_to(request: Request, fallback: str) -> str:
+        """Where to send the browser after a form post.
+
+        The Referer is attacker-controllable, so it is only honoured when it points at this
+        application. Handing it to a Location header unchecked is an open redirect.
+        """
+        referer = request.headers.get("referer")
+        if not referer:
+            return fallback
+        try:
+            parsed = urlparse(referer)
+        except ValueError:
+            return fallback
+        if parsed.netloc and parsed.netloc != request.url.netloc:
+            return fallback
+        path = parsed.path or fallback
+        return f"{path}?{parsed.query}" if parsed.query else path
 
     def when(value: str | None) -> Markup:
         """Render a timestamp the browser can localise.
@@ -66,7 +119,16 @@ def create_app(config: Config) -> FastAPI:
         config.runs_dir.mkdir(parents=True, exist_ok=True)
         await executor.start()
         app.state.startup_checks = preflight.at_startup(config)
-        asyncio.create_task(inventory.refresh(config, database))
+        # Reference retained: asyncio only holds a weak reference to a task, so a bare
+        # create_task can be collected mid-flight, and its exception would be swallowed either
+        # way. The first collection failing silently is how a dashboard comes up empty with no
+        # explanation.
+        task = asyncio.create_task(inventory.refresh(config, database))
+        app.state.startup_collect = task
+        task.add_done_callback(
+            lambda t: t.cancelled() or (t.exception() and
+                                        log.error("startup collection failed: %s", t.exception()))
+        )
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
@@ -243,7 +305,7 @@ def create_app(config: Config) -> FastAPI:
                 f"change data in {config.environment.base_url() or config.environment.base_url_env}. "
                 f"Use the Run button on the page so the confirmation is recorded."
             ])
-            return RedirectResponse(request.headers.get("referer", "/tests"), status_code=303)
+            return RedirectResponse(back_to(request, "/tests"), status_code=303)
 
         result = executor.enqueue_pytest(
             target=target, label=label or target or "Whole suite",
@@ -255,7 +317,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/jobs/{kind}")
     async def start_job(request: Request, kind: str):
-        if kind not in (KIND_DRIFT, KIND_MAP):
+        if kind not in (KIND_DRIFT, KIND_MAP, KIND_COLLECT):
             return JSONResponse({"error": "unknown job"}, status_code=404)
         result = executor.enqueue_job(kind, requested_by=_who(request))
         target_id = result.run_id or result.duplicate_of
@@ -279,7 +341,7 @@ def create_app(config: Config) -> FastAPI:
         if state not in ("approved", "rejected", "pending"):
             return JSONResponse({"error": "unknown state"}, status_code=400)
         database.decide(nodeid, state, _who(request))
-        return RedirectResponse(request.headers.get("referer", "/tests"), status_code=303)
+        return RedirectResponse(back_to(request, "/tests"), status_code=303)
 
     @app.post("/tests/decide-all")
     async def decide_all(request: Request, state: str = Form(...), file: str = Form("")):
@@ -289,19 +351,21 @@ def create_app(config: Config) -> FastAPI:
         for test in database.pending_tests():
             if not file or test["file"] == file:
                 database.decide(test["nodeid"], state, who)
-        return RedirectResponse(request.headers.get("referer", "/tests"), status_code=303)
+        return RedirectResponse(back_to(request, "/tests"), status_code=303)
 
     @app.post("/inventory/refresh")
     async def refresh_inventory(request: Request):
-        result = await inventory.refresh(config, database)
-        if result.new_nodeids:
-            database.set_meta("last_upload", [
-                f"{len(result.new_nodeids)} new test(s) collected and awaiting approval."
-            ])
+        # Enqueued, not run here. Collecting starts a pytest process, and this handler is not
+        # allowed to do that — see the executor's module docstring.
+        outcome = executor.enqueue_job(KIND_COLLECT, _who(request))
+        database.set_meta("last_upload", [
+            "Re-collecting tests. It will appear in Runs, and the list refreshes when it finishes."
+            if outcome.run_id else "A re-collect is already queued."
+        ])
         # Back where the button was pressed. Sending someone from Overview to Tests because a
         # different page happens to host the same action is the kind of small wrongness that
         # makes an interface feel unreliable.
-        return RedirectResponse(request.headers.get("referer", "/tests"), status_code=303)
+        return RedirectResponse(back_to(request, "/tests"), status_code=303)
 
     @app.post("/maintenance/sweep")
     async def manual_sweep():
@@ -354,7 +418,7 @@ def create_app(config: Config) -> FastAPI:
         real = [f for f in files if f and f.filename]
         if not real:
             database.set_meta("last_upload", ["No file was chosen."])
-            return RedirectResponse(request.headers.get("referer", "/recordings"),
+            return RedirectResponse(back_to(request, "/recordings"),
                                     status_code=303)
         for upload_file in real:
             try:
@@ -485,7 +549,10 @@ def create_app(config: Config) -> FastAPI:
         path = executor.run_dir(run_id) / "stdout.log"
         if not path.exists():
             return PlainTextResponse("no log for this run", status_code=404)
-        return PlainTextResponse(path.read_text(encoding="utf-8", errors="replace"))
+        # to_thread: a long run's log is megabytes, and reading it on the event loop stalls every
+        # other request and every live stream for the duration.
+        text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+        return PlainTextResponse(text)
 
     @app.get("/runs/{run_id}/artifact")
     async def artifact(run_id: int, name: str = Query(...)):
@@ -510,10 +577,25 @@ def _sse(seq: int, line: str) -> str:
     return f"id: {seq}\ndata: {payload}\n\n"
 
 
+USER_HEADER_OK = re.compile(r"^[\w.@+-]{1,64}$")
+
+
 def _who(request: Request) -> str:
-    """Best effort. Enough to answer "who started this" when two people share a dev environment."""
-    forwarded = request.headers.get("x-forwarded-user") or request.headers.get("x-remote-user")
-    if forwarded:
+    """Who to record against a run or an approval.
+
+    An authenticating proxy in front of this sets one of these headers. The value is sanity-
+    checked rather than trusted verbatim: it lands in an audit field that is meant to answer
+    "who approved this test", and a 4 KB header or one full of markup would make that record
+    useless or actively misleading.
+
+    With nothing in front, a loopback caller is recorded as "local" rather than "you" — "you"
+    reads as a name in an audit trail and is not one.
+    """
+    forwarded = (request.headers.get("x-forwarded-user")
+                 or request.headers.get("x-remote-user") or "").strip()
+    if forwarded and USER_HEADER_OK.match(forwarded):
         return forwarded
+    if forwarded:
+        log.warning("ignoring an implausible user header: %r", forwarded[:80])
     client = request.client.host if request.client else "unknown"
-    return "you" if client in ("127.0.0.1", "::1") else client
+    return "local" if client in ("127.0.0.1", "::1") else client

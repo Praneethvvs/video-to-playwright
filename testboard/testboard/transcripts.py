@@ -20,8 +20,13 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+# The hours field is optional in the WebVTT spec, and ffmpeg, Whisper and several meeting
+# exporters omit it for anything under an hour: `00:01.000 --> 00:04.000`. Requiring HH meant a
+# perfectly valid .vtt matched no cues at all, fell through to plain-line parsing, and handed the
+# agent a "transcript" containing the WEBVTT header, the cue numbers and the --> arrows — while
+# the page blamed the user's export format for having no timestamps.
 CUE_TIME = re.compile(
-    r"(\d{1,2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{3})"
+    r"((?:\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3})\s*-->\s*((?:\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{3})"
 )
 SPEAKER = re.compile(r"^<v\s+([^>]+)>(.*)$")
 SUPPORTED = (".vtt", ".srt", ".docx", ".txt", ".md")
@@ -41,8 +46,12 @@ class Transcript:
 
 
 def _seconds(stamp: str) -> float | None:
+    """Seconds from `HH:MM:SS.mmm` or `MM:SS.mmm`, both of which appear in real cue files."""
     try:
-        hours, minutes, rest = stamp.split(":")
+        parts = stamp.split(":")
+        if len(parts) == 2:
+            parts = ["0", *parts]
+        hours, minutes, rest = parts
         return int(hours) * 3600 + int(minutes) * 60 + float(rest.replace(",", "."))
     except (ValueError, AttributeError):
         return None
@@ -170,19 +179,35 @@ def _from_plain(text: str) -> list[dict]:
 def parse(path: Path, raw: bytes | None = None) -> Transcript:
     suffix = path.suffix.lower()
 
+    cue_format_failed = False
     if suffix == ".docx":
         cues = _from_docx(path)
     else:
         text = (raw if raw is not None else path.read_bytes()).decode("utf-8", errors="replace")
         cues = _from_cue_format(text) if suffix in (".vtt", ".srt") else []
+        if not cues and suffix in (".vtt", ".srt"):
+            # Do not quietly fall through to plain lines. A cue file that parsed to nothing is a
+            # file we failed to read, and treating its raw text as narration puts the WEBVTT
+            # header, the cue numbers and the --> arrows into the agent's prompt as though a
+            # human had said them.
+            cue_format_failed = True
         if not cues:
             cues = _from_plain(text)
 
     timed = sum(1 for c in cues if c.get("start_seconds") is not None)
-    has_timestamps = timed >= max(2, len(cues) // 4)
+    # A quarter of the cues carrying a time is enough to align narration to video. The floor is
+    # one, not two: a short .vtt with a single fully-timed cue is timestamped, and calling it
+    # otherwise produced a warning that blamed a Teams .docx export for a perfectly good file.
+    has_timestamps = bool(cues) and timed >= max(1, len(cues) // 4)
 
     note = ""
-    if not has_timestamps:
+    if cue_format_failed:
+        # Blaming the export format would be wrong and misleading here: this IS the .vtt, and we
+        # could not read it.
+        note = (f"This looked like a cue file but no cues could be read from it, so its raw lines "
+                f"are being shown instead. That usually means an unexpected dialect of "
+                f"{suffix} — check the file before generating anything from it.")
+    elif not has_timestamps:
         note = ("Almost no per-cue timestamps, which is typical of a Teams .docx export. Ask for "
                 "the .vtt if there is one: without times, narration can only be matched to the "
                 "video by content, which is slower and less certain.")

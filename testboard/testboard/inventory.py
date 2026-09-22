@@ -11,6 +11,7 @@ their suite is empty when in fact it is broken.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -20,11 +21,12 @@ from pathlib import Path
 
 from .config import Config
 from .db import utcnow
-from .procs import spawn
+from .procs import kill_tree, spawn
 
 log = logging.getLogger("testboard.inventory")
 
 PLUGIN_MODULE = "testboard_collect_plugin"
+COLLECT_TIMEOUT = 180
 
 
 @dataclass
@@ -77,8 +79,19 @@ async def collect(config: Config) -> CollectResult:
     ]
 
     proc = await spawn(argv, cwd=config.repo_root, env=env)
-    raw = await proc.stdout.read()
-    await proc.wait()
+    try:
+        # Bounded. Collection imports every conftest in the repository, and one that blocks on
+        # the network would otherwise hang this call — and with it the worker and the whole
+        # queue — with no way out.
+        raw = await asyncio.wait_for(proc.stdout.read(), timeout=COLLECT_TIMEOUT)
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        await kill_tree(proc)
+        return CollectResult(
+            False, [], -1,
+            f"collection did not finish within {COLLECT_TIMEOUT}s and was killed. A conftest that "
+            f"blocks on start-up is the usual cause.", "harness",
+        )
     text = raw.decode("utf-8", errors="replace")
     code = proc.returncode or 0
 

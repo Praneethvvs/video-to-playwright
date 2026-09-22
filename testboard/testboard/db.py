@@ -167,6 +167,10 @@ class Database:
         }
         added: set[str] = set()
         with self._lock:
+            # One transaction for the ALTERs and the backfill together. SQLite makes DDL
+            # transactional, so a crash between adding the state column and backfilling it would
+            # otherwise leave every pre-existing test permanently 'pending'.
+            self._conn.execute("BEGIN IMMEDIATE")
             for table, columns in wanted.items():
                 have = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
                 if not have:
@@ -186,6 +190,16 @@ class Database:
                     "UPDATE inventory SET state = 'approved', origin = 'baseline', "
                     "decided_by = 'the suite as it stood', decided_at = ?",
                     (utcnow(),),
+                )
+
+            # Any database that already has tests has already had its baseline, whether or not
+            # this marker existed when that happened. Without this, the next collection on an
+            # upgraded install would decide it was the first one and re-approve everything.
+            has_tests = self._conn.execute("SELECT 1 FROM inventory LIMIT 1").fetchone()
+            if has_tests:
+                self._conn.execute(
+                    "INSERT INTO meta(key, value) VALUES('baseline_established', 'true') "
+                    "ON CONFLICT(key) DO NOTHING"
                 )
             self._conn.commit()
         if added:
@@ -293,9 +307,19 @@ class Database:
         future arrival, which is the thing approval exists to prevent.
         """
         now = utcnow()
+
+        # "Is the table empty" is not the same question as "has a baseline been taken", and
+        # conflating them opens the approval gate on exactly the repository this tool is for.
+        # A repo with no tests yet collects zero rows (pytest exit 5), so the table stays empty;
+        # the next collection is the one fired after a generation run, which would then mint
+        # every test the agent just wrote as 'baseline / approved / the suite as it stood'.
+        #
+        # So the baseline is a fact that gets recorded once, and a generation refresh can never
+        # establish it regardless.
+        established = bool(self.get_meta("baseline_established"))
+        first_ever = not established and origin != "generated"
+
         with self._lock:
-            first_ever = not self._conn.execute(
-                "SELECT 1 FROM inventory LIMIT 1").fetchone()
             known = {r["nodeid"] for r in self._conn.execute("SELECT nodeid FROM inventory")}
             new_ids = [it["nodeid"] for it in items if it["nodeid"] not in known]
 
@@ -311,11 +335,18 @@ class Database:
                     "ON CONFLICT(nodeid) DO UPDATE SET file=excluded.file, name=excluded.name, "
                     "markers=excluded.markers, present=1, last_seen=excluded.last_seen",
                     (it["nodeid"], it["file"], it["name"], json.dumps(it["markers"]), now, now,
-                     state, "first collection" if first_ever else None,
+                     state, "the suite as it stood" if first_ever else None,
                      now if first_ever else None, row_origin,
-                     source_id if is_new and not first_ever else None),
+                     # Always carried. Suppressing it on a baseline pass meant a generated test
+                     # could end up with no link to the recording it came from.
+                     source_id if is_new else None),
                 )
             self._conn.commit()
+
+        # Recorded only once something was actually collected. An empty collection must not count
+        # as "the baseline has been taken", or the next one inherits that claim.
+        if items and not established and origin != "generated":
+            self.set_meta("baseline_established", True)
         return new_ids
 
     def decide(self, nodeid: str, state: str, who: str) -> None:

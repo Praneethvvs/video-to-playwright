@@ -121,32 +121,71 @@ async def kill_stale_pid(pid: int, created_at: float) -> bool:
 BROWSER_NAMES = ("chrome", "chromium", "headless_shell", "msedge", "firefox", "webkit")
 
 
-def sweep_orphan_browsers(under: Path, older_than_seconds: float = 1800) -> int:
-    """Kill browsers that outlived whatever started them.
+def sweep_orphan_browsers(*roots: Path, older_than_seconds: float = 1800,
+                          run_in_progress: bool = False) -> int:
+    """Kill browsers left behind by a run that died without cleaning up.
 
     Correct process-group handling covers the ordinary cases. This covers the rest: a SIGKILL
-    cannot be trapped, so pytest can die mid-teardown and leave Chromium behind. Scoped to
-    processes whose working directory sits under our own state directory, so nothing belonging to
-    the person using the machine is ever a candidate.
+    cannot be trapped, so pytest can die mid-teardown and leave Chromium behind.
+
+    The first version of this could never fire, for two independent reasons. It skipped any
+    browser whose parent PID still existed — but on Windows an orphan keeps its dead parent's
+    number, which is frequently already recycled and therefore "exists", and in a container an
+    init shim gives a reparented orphan a live non-1 parent. And it required the browser's
+    working directory to be under the state directory, while a Playwright browser inherits
+    pytest's, which is the repository root.
+
+    So ownership is now established from evidence instead: the process must be a browser, older
+    than the threshold, and either working inside one of our directories or running against a
+    profile inside one. Nothing is killed at all while a run is in progress, because a live run's
+    browser is by definition not an orphan.
     """
+    if run_in_progress:
+        return 0
+
     killed = 0
+    candidates = 0
     cutoff = time.time() - older_than_seconds
-    under = under.resolve()
-    for proc in psutil.process_iter(["pid", "name", "create_time", "ppid"]):
+    resolved = [r.resolve() for r in roots]
+
+    def ours(path: Path) -> bool:
+        return any(path == root or root in path.parents for root in resolved)
+
+    for proc in psutil.process_iter(["pid", "name", "create_time"]):
         try:
             name = (proc.info.get("name") or "").lower()
             if not any(b in name for b in BROWSER_NAMES):
                 continue
             if (proc.info.get("create_time") or 0) > cutoff:
                 continue
-            if psutil.pid_exists(proc.info.get("ppid") or 0) and (proc.info.get("ppid") or 0) > 1:
-                continue  # still has a live parent; not an orphan
-            cwd = Path(proc.cwd()).resolve()
-            if under not in cwd.parents and cwd != under:
+            candidates += 1
+
+            mine = False
+            try:
+                if ours(Path(proc.cwd()).resolve()):
+                    mine = True
+            except (psutil.AccessDenied, OSError, ValueError):
+                pass
+            if not mine:
+                # A Playwright browser is launched with its profile in a temp directory we
+                # created; the command line is the surviving evidence of who started it.
+                for arg in proc.cmdline():
+                    if arg.startswith("--user-data-dir=") and ours(
+                            Path(arg.split("=", 1)[1]).resolve()):
+                        mine = True
+                        break
+            if not mine:
                 continue
+
             proc.kill()
             killed += 1
             log.warning("killed orphaned browser pid=%s name=%s", proc.info["pid"], name)
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ValueError):
             continue
+
+    # Logged either way. A sweep that never kills anything is otherwise indistinguishable from a
+    # sweep that is silently filtering out every real orphan, which is what it was doing.
+    if candidates:
+        log.info("orphan sweep: %d aged browser(s) seen, %d attributable to us and killed",
+                 candidates, killed)
     return killed
