@@ -23,6 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# testboard's own tests. Pure logic, no browser, no network: they cover the properties that are
+# expensive to be wrong about — the approval gate, the access policy, transcript shapes and
+# result attribution — and they run in about a second.
+dev = ["pytest>=8"]
+
 # Turning a recording into tests. Optional because it is the one feature that needs a credential
 # and a large dependency (the SDK bundles a pinned Codex binary), and everything else — the test
 # list, running, drift, the map — works without it. Absent, generation reports itself unavailable
@@ -35,6 +40,10 @@ testboard = "testboard.__main__:main"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
 
 [tool.setuptools.packages.find]
 include = ["testboard*"]

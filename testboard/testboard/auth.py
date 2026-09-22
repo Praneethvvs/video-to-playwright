@@ -120,9 +120,17 @@ def token_ok(policy: Policy, presented: str | None) -> bool:
         return True
     if not presented or not policy.token:
         return False
-    # compare_digest: a plain == leaks the length of the shared prefix through timing. Cheap to
-    # avoid, and this is the only secret the application has.
-    return hmac.compare_digest(presented, policy.token)
+    # compare_digest, because a plain == leaks the length of the shared prefix through timing,
+    # and this is the only secret the application has.
+    #
+    # Compared as **bytes**. Given str it accepts ASCII only and raises TypeError otherwise, so a
+    # client presenting a token with any non-ASCII character in it crashed the middleware and got
+    # a 500 where it should have got a 401 — a trivially reachable error path that also says more
+    # about the server than a refusal should.
+    try:
+        return hmac.compare_digest(presented.encode("utf-8"), policy.token.encode("utf-8"))
+    except (AttributeError, UnicodeError):
+        return False
 
 
 def identity(request, policy: Policy) -> str:

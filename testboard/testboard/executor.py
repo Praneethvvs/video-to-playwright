@@ -282,18 +282,43 @@ class Executor:
             # rule here is that a subprocess is started by this loop and nowhere else, and an
             # untimed spawn from an HTTP handler had no kill path, no PID recorded and no way
             # for anybody to see that it was happening.
+            # Opened like every other kind, so the run page streams and terminates normally
+            # instead of holding a connection open against a stream that never exists.
+            self.bus.open(run_id, log_path)
+            self._current_run_id = run_id
             self.db.update_run(run_id, status="running", started_at=utcnow())
-            from . import inventory
-            result = await inventory.refresh(self.config, self.db)
-            message = (f"{len(result.items)} test(s) collected"
-                       + (f", {len(result.new_nodeids)} new and awaiting approval"
-                          if result.new_nodeids else "")) if result.ok else result.detail[-500:]
-            log_path.write_text(f"{message}\n", encoding="utf-8")
+
+            # Bound before the try, and used after it. Assigning them inside and reading them
+            # after the finally is the unbound-local shape that took the whole generation
+            # feature out earlier tonight; it is not getting a second outing.
+            result = None
+            message = "collection did not complete"
+            try:
+                self.bus.publish(run_id, "collecting tests with pytest --collect-only")
+                from . import inventory
+                result = await inventory.refresh(self.config, self.db)
+                lines = []
+                if result.ok:
+                    lines.append(f"{len(result.items)} test(s) collected")
+                    if result.new_nodeids:
+                        lines.append(f"{len(result.new_nodeids)} new, awaiting approval:")
+                        lines += [f"  {n}" for n in result.new_nodeids]
+                else:
+                    lines.append(f"collection failed ({result.reason}, exit {result.exit_code})")
+                    lines += result.detail[-2000:].splitlines()
+                message = lines[0]
+                for line in lines:
+                    self.bus.publish(run_id, line)
+                log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            finally:
+                self.bus.finish(run_id)
+                self._current_run_id = None
+            ok = bool(result and result.ok)
             self.db.update_run(
                 run_id, finished_at=utcnow(),
-                status="passed" if result.ok else "failed",
-                error_reason=None if result.ok else "collection_error",
-                exit_code=result.exit_code, message=message[:2000],
+                status="passed" if ok else "failed",
+                error_reason=None if ok else "collection_error",
+                exit_code=result.exit_code if result else None, message=message[:2000],
             )
             return
 

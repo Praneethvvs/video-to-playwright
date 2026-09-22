@@ -232,6 +232,26 @@ shared environment, and authentication belongs at the ingress, not in here.
 
 Until that is settled: `kubectl port-forward svc/testboard 8770:80`.
 
+## Its own tests
+
+```bash
+pip install -e ".[dev]" && pytest
+```
+
+55 tests, about a second, no browser and no network. They cover the properties that are expensive
+to be wrong about rather than aiming at coverage:
+
+| | |
+|---|---|
+| `test_approval.py` | a test only enters the suite because a person said so — including the empty-repo-then-generate sequence that used to bypass it entirely |
+| `test_auth.py` | a public bind without a token is refused; a prefix of the token does not pass; an implausible proxy header is never recorded as a name |
+| `test_transcripts.py` | every real file shape that has broken something: mm:ss cues, Word revision ids, `<w:br/>` between runs, a `.vtt` that parses to nothing |
+| `test_ingest.py` | an import never approves a test, never adds an inventory row, and never attributes a result to an ambiguous name |
+
+They found a live defect on their first run: `hmac.compare_digest` accepts ASCII only when given
+`str`, so a token containing any non-ASCII character raised `TypeError` inside the auth middleware
+and returned 500 where it should have returned 401.
+
 ## Limits worth knowing
 
 - **Python and pytest only.** The runner and the inventory collector are the only language-specific
