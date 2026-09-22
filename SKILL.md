@@ -217,61 +217,6 @@ or record names. That is deliberate: both test failures in this workflow's own h
 asserting data as though it were structure, and a map that encoded data would report drift on every
 ordinary day's activity until nobody read it.
 
-### 1d. Offer testboard, if the repo does not have it
-
-`testboard` is a small web application that shows the repo's tests, their last results, the map's
-age and the drift state, and re-runs any single test on demand with live output. It is optional —
-nothing else in this workflow depends on it — but it is the difference between a suite people read
-about in a pipeline and one they operate.
-
-Check for `testboard.yaml` in the test repo. If it is missing, offer it; do not install it
-unasked.
-
-```bash
-python scripts/install_testboard.py --repo <test-repo> [--with-codex]
-cd <test-repo> && .testboard/venv/Scripts/python.exe -m testboard     # bin/python on Linux
-```
-
-**Look in its database before asking for a recording.** If testboard is already installed, the
-recordings and transcripts somebody uploaded are in `.testboard/testboard.db`, and the transcript
-text is in the `sources` table rather than on disk:
-
-```bash
-sqlite3 .testboard/testboard.db \
-  "SELECT id, title, video_name, transcript_name, has_timestamps FROM sources ORDER BY id DESC"
-```
-
-That is faster than asking for a file the team has already handed over, and it is the same text
-the Convert button feeds an agent. `--with-codex` adds the SDK so that button works at all.
-
-If the team runs the suite in a pipeline, point that pipeline at `POST /api/runs/junit` with its
-JUnit report — `.pipelines/ci.yaml` in a scaffolded repo already does. Without it the dashboard
-can only describe runs somebody started in its own interface, and will say "never run from here"
-about tests the pipeline has been running green for weeks.
-
-The installer infers `testboard.yaml` from what is actually in the repo — test paths from
-`testpaths`, environment variable names from `conftest.py`, marker names from the registered
-markers — and writes it **only if it is absent**. Tell the person to read the inferred values
-rather than trusting them.
-
-Things to know before recommending it:
-
-- **The application is not committed.** Only `testboard.yaml` and `testboard.lock` are; the code
-  installs into a gitignored `.testboard/`. Upgrading is re-running the installer.
-- **Python and pytest only.** It refuses a non-Python repo rather than half-working.
-- **A newly collected test is pending, not part of the suite.** That applies to whatever an agent
-  writes and to whatever a merge brings in. "Run all" skips anything unapproved, and approving
-  records who did it. Do not expect a generated test to be in the gate: somebody has to accept it.
-- **It refuses to listen on a non-loopback address without `TESTBOARD_TOKEN`.** That is deliberate
-  and not a bug to work around; it can start runs that mutate a shared environment.
-- **The agent's open questions are not answered in the dashboard.** It shows what the agent
-  reported and points the reader back to their own session and a pull request, because nothing
-  here can verify an answer against the application.
-
-If the repo uses `--strict-markers` and you intend to quarantine anything, check that the
-quarantine marker is actually registered in `pyproject.toml` first. It frequently is not, and then
-the quarantine instruction in this skill fails collection instead of quarantining the test.
-
 ### 2. Probe the media before trusting it
 
 The scripts need an ffmpeg binary. If one isn't on PATH, install the bundled wheel — no admin rights,
@@ -343,8 +288,21 @@ sampling missed it entirely.
 python scripts/read_transcript.py <transcript> --classify
 ```
 
-Handles `.vtt`, `.srt`, `.docx` and `.txt`, returning ordered utterances with timestamps where
-available, tagged as likely preconditions / expectations / rules.
+Handles `.vtt`, `.srt`, `.docx`, `.txt` and `.md`, returning ordered utterances with speaker and
+timestamp where available, tagged as likely preconditions / expectations / rules. Add `--json` if
+you want to process it rather than read it.
+
+**Read the `NOTE` line before you read the utterances.** It distinguishes the two failures that
+produce an identical-looking wall of untimed text:
+
+| What it says | What it means |
+|---|---|
+| *Almost no per-cue timestamps…* | the export genuinely has no times. Normal for a Teams `.docx`. Ask for the `.vtt` |
+| *…no cues could be read from it* | this **is** a cue file and the parser failed on it. Do not generate anything from this until you have looked at the file |
+
+A Teams `.docx` is more useful than it first appears: the parser lifts the speaker and the offset
+Teams prints at the head of each turn, so you get attribution and a per-turn time even though only
+a `.vtt` gives you a time per line.
 
 Mine it for four things, and keep them separate:
 - **Prerequisites** — state that existed before recording started ("you have a client created…")
