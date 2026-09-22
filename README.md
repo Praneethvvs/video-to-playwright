@@ -1,69 +1,147 @@
 # video-to-playwright
 
-A [Claude Code](https://claude.com/claude-code) skill that turns a screen recording of someone manually
-testing a web app — plus the transcript, if there is one — into a **verified, passing Playwright suite**,
-and produces a single walkthrough video so the person who made the original recording can confirm the
-tests actually match what they demonstrated.
+Turn a screen recording of someone manually testing a web app into a **verified, passing Playwright
+suite**, plus one walkthrough video so the person who made the recording can confirm the tests match
+what they demonstrated — without reading code.
 
-It is built around one idea: a recording tells you **what a human did and why**, but it cannot tell you
-**how to address anything in code**. Those come from different places, and keeping them separate is the
-method.
+It works because a recording tells you **what a human did and why**, but never **how to address
+anything in code**. Those come from different places, and the whole method is keeping them separate:
+frames give the sequence, narration gives the expected results, the app source gives the locators.
 
-| Input | Supplies | Cannot supply |
+---
+
+## 1. What you must provide
+
+Five inputs. Everything else the agent works out for itself.
+
+| | What | Why it can't be guessed |
 |---|---|---|
-| Video frames | the sequence, the UI state at each step | durable locators — pixels carry no roles or test-ids |
-| Narration / transcript | intent, expected outcomes, business rules, prerequisites | anything the speaker didn't say aloud |
-| App source + running app | how to address every element | which flows anyone cares about |
+| 1 | **Recording** — `.mp4` / `.webm` / `.mov` | — |
+| 2 | **Transcript** — `.vtt` preferred, `.docx` accepted | Narration is the *only* source of expected results. A silent recording cannot produce assertions |
+| 3 | **Test repo** (clone URL or path) | Where tests, the project map and the PR land. **Written to** |
+| 4 | **App repo** (clone URL or path) | Read for the locator vocabulary. **Never modified** |
+| 5 | **Dev URL** | Every locator is verified against it. Skip this if the address bar is readable in the footage |
 
-## The one rule
+Plus one question worth answering up front, because it shapes the entire suite:
 
-**Never ship a test containing a locator or assertion you have not confirmed against the running
-application.** A plausible-looking test that was never executed is worse than no test: it reads as
-coverage, passes review, and fails silently later.
+> **May the tests create and delete data in that environment?** If yes they seed their own fixtures.
+> If no they can only assert on whatever happens to be there.
 
-The corollary matters just as much — **never invent an assertion to fill a gap.** If the recording
-doesn't say what "correct" means, that becomes a question for a human, and if nobody answers it, it
-becomes an honest hole in the traceability matrix. An honest hole is visible and someone can fill it.
-Fabricated coverage is invisible until it costs you a release.
+**Ask for the `.vtt` if you only have a `.docx`.** Teams exports both. A `.vtt` brackets each line
+with start and end times; a `.docx` gives one offset per speaker turn. Without per-line times,
+narration can only be matched to frames by content — slower and less certain.
 
-**Full usage guide:** [docs/usage.html](docs/usage.html) — open it locally, or read the sections below.
+## 2. Run it
 
-## Install
+Both paths do the same thing. The only difference is that Claude Code finds the skill by itself and
+Codex has to be told.
 
-Nothing here is specific to one agent. `SKILL.md` is an instruction set in Markdown and the scripts are
-plain Python, so any harness that can read files and run shell commands will do.
-
-### Claude Code
-
-Skills are discovered from `~/.claude/skills/`, and trigger from the request itself:
+**Claude Code**
 
 ```bash
 git clone https://github.com/Praneethvvs/video-to-playwright.git ~/.claude/skills/video-to-playwright
 ```
 
-> Here's a recording of our release checks: `~/recordings/checkout-flow.mp4`, and the transcript.
-> I need Playwright tests for this.
+Then just ask, naming the five inputs:
 
-### Codex
+> Turn `recordings/checkout.mp4` + `recordings/checkout.vtt` into Playwright tests.
+> Test repo `~/work/checkout-e2e`, app repo `~/work/checkout-ui`, dev URL `https://checkout.dev.example.com`.
+> Tests may create and delete their own data.
 
-Codex **does not auto-discover skill files**, so the "read it and follow it" instruction is doing real
-work. Without it you get a generic attempt rather than the workflow.
+**Codex**
 
 ```bash
 git clone https://github.com/Praneethvvs/video-to-playwright.git
 codex
 ```
 
-> Read `video-to-playwright/SKILL.md` and follow it. Here's the recording:
-> `recordings/checkout-flow.mp4`, and the transcript: `recordings/checkout-flow.vtt`.
+Then the same request, prefixed with the instruction to read the workflow — Codex does not
+auto-discover skill files, and without this you get a generic attempt instead:
 
-`AGENTS.md` carries the always-on rules for Codex sessions, so cloning this *into* a project picks them
-up automatically. The YAML frontmatter at the top of `SKILL.md` is Claude Code's discovery metadata and
-is inert elsewhere.
+> Read `video-to-playwright/SKILL.md` and follow it. Turn `recordings/checkout.mp4` + …
 
-#### Unattended, with `codex exec`
+For unattended runs see [Running unattended](#running-unattended) below — there are two traps that
+each cost a full run.
 
-A full run takes tens of minutes, so this is usually what you want:
+## 3. What happens, in order
+
+| | Step | You are involved |
+|---|---|---|
+| 1 | Reads the transcript, probes the video, pulls frames | — |
+| 2 | Reads both repos: language, runner, layout, existing page objects | — |
+| 3 | Captures or checks `project-map.json`, a structural baseline of the app | — |
+| 4 | Drafts a plain-language spec in `specs/`, with gaps left as gaps | — |
+| 5 | **Asks you a batch of questions** | **yes — ~30 min** |
+| 6 | Verifies every locator against the running app | — |
+| 7 | Writes the tests and runs them until green | — |
+| 8 | Records the walkthrough video | — |
+| 9 | **Asks anything still unresolved**, then opens a PR | **yes** |
+
+### When it asks questions
+
+Questions arrive **batched at checkpoints**, not drip-fed, and only *after* it has watched the
+footage — so they come with its best guess attached and are usually one word to answer. Expect
+roughly three per checkpoint in the flow:
+
+- **What exactly were you checking here?** "A banner appeared" / "it said this precise text" / "the
+  row reached this status" are three different tests.
+- **Where did this data come from?** The recording shows the result of setup it never captured.
+- **What would you have called a failure?**
+
+If **nobody is available**, say so up front. It will deliver what it can and list the rest as open
+questions rather than stalling — or guessing, which it will not do.
+
+**It will not invent an assertion to fill a gap.** If the narration never says what "correct" means,
+that becomes an open question, and if nobody answers it, an honest hole in the traceability matrix.
+A visible hole can be filled; fabricated coverage is invisible until it costs you a release.
+
+### Where the tests are written
+
+Into the **test repo**, matching whatever conventions it already has — its layout, its naming, its
+existing page objects. A suite that looks foreign to the people maintaining it gets rewritten.
+
+If that repo is empty, this is the layout used, and it tells you before writing anything:
+
+```
+e2e/
+  tests/          test_<feature>.py      one file per flow in the recording
+  pages/          page objects           one class per screen
+  helpers/        framework quirks       grids, toasts, dialogs
+  conftest.py     fixtures
+  .artifacts/     traces and screenshots (gitignored)
+specs/            the plain-language spec
+project-map.json  the structural baseline for drift detection
+```
+
+The **app repo is never modified**. Changes to the test repo land as a pull request.
+
+## 4. What you get
+
+- A passing suite, structured so a broken selector is a one-line fix
+- **One** continuous walkthrough video at viewport resolution, in the recording's order
+- A traceability matrix: every narrated claim marked automated / partial / blocked / not built
+- A list of open questions — not silently-guessed answers
+- An instrumentation backlog: elements needing `aria-label` or `data-testid`
+
+**Realistic scale.** On a 10-minute narrated recording of a single page: 27 of 37 narrated claims
+automated, 20 passing tests, 8 open questions, ~90 minutes of machine time, and it still needs a
+human review pass. "Point at a video, get a suite" is not the target. "Point at a video, get a
+reviewed draft plus a verification video" is.
+
+---
+
+## The one rule
+
+**Never ship a test containing a locator or assertion that has not been executed against the running
+application.** A plausible-looking test that never ran is worse than no test: it reads as coverage,
+passes review, and fails silently later.
+
+There is a subtler version that strikes while you are looking at the real app: you notice something
+true — exactly one option selected, three rows present — and assert it. *True when I looked* is not a
+requirement. Nobody asked for it, nobody recognises it when it breaks, and on shared data it will
+break with no defect present.
+
+## Running unattended
 
 ```bash
 codex exec -C <workdir> -s danger-full-access --skip-git-repo-check \
@@ -74,199 +152,82 @@ codex exec -C <workdir> -s danger-full-access --skip-git-repo-check \
 | Flag | Why |
 |---|---|
 | `-C <dir>` | Working directory; everything resolves relative to it |
-| `-s <policy>` | Sandbox policy — **see the trap below, the obvious choice is wrong** |
+| `-s <policy>` | Sandbox policy — **the obvious choice is wrong, see below** |
 | `--skip-git-repo-check` | Required when the working directory is not a git repo |
-| `-o <file>` | Writes the final message to a file, so an unattended run leaves a readable outcome |
-| `--json` | Streams structured events, to watch progress programmatically |
+| `-o <file>` | Writes the final message to a file, so the run leaves a readable outcome |
 
-#### Two traps that each cost a full run
+**Trap 1: `workspace-write` is not enough, and failing looks like passing.** The workflow's whole
+point is verifying locators against the running app, which needs to launch a browser and reach the
+network. Under `workspace-write` that fails with `WinError 5: Access is denied` on Windows — and a
+blocked run produces all-**skipped** tests, a map with every route **unreachable**, and **exit code
+0**. The output is honest about being blocked; the exit code invites reading it as a pass.
 
-**1. `workspace-write` is not enough, and failing looks like passing.**
+> **Before believing any run passed, check two things:** the project map has reachable routes, and
+> the tests report passes rather than skips.
 
-It sounds sufficient — the workflow writes frames and test files. But the whole point is verifying
-locators against the *running application*, which means launching a browser and reaching the app over
-the network. Under `workspace-write` that fails with `WinError 5: Access is denied` on Windows.
+**Trap 2: put the task in a file, never in the argument.** A multi-line prompt passed as a shell
+argument gets split on whitespace and its fragments parsed as flags — from PowerShell that produced
+`error: unexpected argument 'a' found`. Write a `TASK.md` naming the five inputs and pass a one-line
+prompt pointing at it.
 
-What makes this expensive is how it presents. A blocked run produces a suite of tests that are all
-**skipped**, a project map with every route **unreachable**, and **exit code 0**. The output is honest
-about being blocked; the exit code invites you to read it as a pass.
+**Finding the binary on Windows.** `codex` is often not on `PATH`:
+`%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe` — the `<hash>` changes between versions, so glob
+for it. Run `codex login status` before a long job.
 
-```bash
-codex exec -s danger-full-access ...                                        # sandbox elsewhere: a container, a VM
-codex exec -s workspace-write -c 'sandbox_permissions=["disk-full-read-access"]' ...   # or grant what is needed
-```
-
-> **Before believing any run succeeded, check two things:** the project map has reachable routes, and
-> the test run reports passes rather than skips.
-
-**2. Put the task in a file, never in the argument.**
-
-A multi-line prompt passed as a shell argument gets split on whitespace and its fragments parsed as
-flags. From PowerShell, a here-string prompt containing blank lines and hyphens produced:
-
-```
-error: unexpected argument 'a' found
-```
-
-That is an argument-quoting problem rather than a Codex bug, and it wastes a run before you notice.
-Write a `TASK.md` and pass a one-line prompt pointing at it:
-
-```markdown
-# Task
-
-Read `video-to-playwright/SKILL.md` in this directory and follow it.
-
-**The request:** "Here's a recording of our release checks: `recordings/checkout.mp4`, and the
-transcript `recordings/checkout.vtt`. I need a Playwright suite, and a video I can show the tester."
-
-**Environment:** `python` here has `imageio-ffmpeg` installed. <Say whether a human is available to
-answer questions, and whether the agent may create and delete data in the target environment.>
-
-## Deliverables
-1. The test suite  2. A passing test run  3. The walkthrough video  4. The traceability matrix
-```
-
-A task file is better practice anyway: it records exactly what was asked, which matters when comparing
-runs or re-running after a change.
-
-#### Finding the binary on Windows
-
-`codex` is frequently not on `PATH` even when installed:
-
-```
-%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe
-```
-
-The `<hash>` changes between versions, so glob for it rather than hardcoding. A `~/.codex/` holding
-`config.toml` and `plugins/` is a reliable sign it is installed even when the launcher isn't findable.
-Run `codex login status` before starting a long job.
-
-#### Two things to state that the agent cannot work out
-
-- **Whether a human is available to answer questions.** The workflow batches questions to a person at
-  checkpoints. If nobody is there it should deliver what it can and list the rest rather than stall.
-- **Whether it may create and delete data in the target environment**, and what naming convention to
-  use so anything left behind is identifiable.
-
-**[`references/running-with-codex.md`](references/running-with-codex.md)** has the rest: what a real
-run looked like end to end, and which behaviours to watch for when evaluating a different agent.
-
-### Any other agent
-
-The mechanics are plain file reads and shell commands, so nothing here is Claude- or Codex-specific.
-Point the harness at `SKILL.md` the same way, and check the same two things before believing a run
-passed.
-
-### Without any model at all
-
-Roughly two-thirds of this is useful with no agent involved: the scripts pull frames and read
-transcripts on their own, `references/gotchas-web-frameworks.md` is documentation a developer can read
-before writing locators by hand, and `playwright codegen` is free and records a flow into runnable code.
-Slower than the full workflow, but no licence required.
+[`references/running-with-codex.md`](references/running-with-codex.md) has the rest.
 
 ## Requirements
 
-- **Claude Code** (or any agent harness that can read the skill and run shell commands)
-- **Python 3.10+** with an ffmpeg binary. If ffmpeg isn't on `PATH`, the bundled wheel needs no admin
-  rights and works inside a project venv: `pip install imageio-ffmpeg`
-- **Playwright** — Python (`pytest-playwright`) or TypeScript (`@playwright/test`)
-- Access to a **running instance** of the app under test. This is not optional; verification against the
-  live app is the whole point.
+- An agent harness that can read files and run shell commands — Claude Code, Codex, or another
+- **Python 3.10+** with ffmpeg. Not on `PATH`? `pip install imageio-ffmpeg` needs no admin rights
+- **Playwright** — `pytest-playwright` or `@playwright/test`
+- A **running instance** of the app. Not optional; verification against it is the point
 
 ## What's in here
 
 ```
-SKILL.md                                  the workflow: 12 steps, plus 1b, 1c and 11b
-AGENTS.md                                 always-on rules, picked up automatically by Codex
+SKILL.md                          the workflow: 12 steps, plus 1b, 1c and 11b
+AGENTS.md                         always-on rules, picked up automatically by Codex
 references/
-  gotchas-web-frameworks.md               locator traps, with the measurements that prove them
-  clarification-loop.md                   what to ask, when, and what never to ask
-  verification-loop.md                    reading failures, and knowing when to stop
-  recording-verification-video.md         producing the walkthrough
-  silent-recordings.md                    no narration, and the recording cannot be redone
-  running-with-codex.md                   codex exec flags, and the quoting trap that breaks prompts
+  gotchas-web-frameworks.md       locator traps, with the measurements that prove them
+  clarification-loop.md           what to ask, when, and what never to ask
+  verification-loop.md            reading failures, and knowing when to stop
+  recording-verification-video.md producing the walkthrough
+  silent-recordings.md            no narration, and the recording cannot be redone
+  running-with-codex.md           codex exec detail
 scripts/
-  probe_media.py                          duration, resolution, and whether the audio has speech
-  extract_frames.py                       auto-tuned scene detection + uniform coverage + gap report
-  grab_frame.py                           precise frames at native resolution, with crop and zoom
-  read_transcript.py                      .vtt / .srt / .docx / .txt / .md -> attributed utterances
-  build_project_map.py                    capture the structural baseline of the running app
-  check_drift.py                          compare the app against that baseline before trusting a pass
-assets/                                   conftest, page-object and walkthrough templates
-tests/                                    the transcript parser's own tests
-docs/usage.html                           the same guide, formatted for sharing
+  probe_media.py                  duration, resolution, whether the audio has speech
+  extract_frames.py               scene detection + uniform coverage + gap report
+  grab_frame.py                   precise frames at native resolution, with crop and zoom
+  read_transcript.py              .vtt/.srt/.docx/.txt/.md -> attributed, timestamped utterances
+  build_project_map.py            capture the structural baseline of the running app
+  check_drift.py                  compare the app against that baseline
+assets/                           conftest, page-object and walkthrough templates
+tests/                            the transcript parser's own tests
+docs/usage.html                   the same guide, formatted for sharing
 ```
 
-The scripts are plain Python with no dependencies beyond ffmpeg, so they're useful on their own if you
-just want to pull frames or read a Teams transcript.
-
-## The gotchas file is the most reusable part
-
-Locator traps that silently break the obvious approach, each with the measurement that demonstrates it:
-
-- Off-screen grid columns are usually still in the DOM — and how to tell "scrolled away" from "genuinely
-  absent", which is the difference between a locator bug and app drift
-- Pinned grid columns split one row across three DOM elements sharing a `row-id`
-- DOM order is not display order, so never address rows by index
-- Dropdown options are portalled out of the dialog that opened them
-- `[role=dialog]` nodes persist after closing — assert hidden, not absent
-- Toast containers may be mounted on demand, which breaks negative assertions confusingly
-- Generated ids (`base-ui-«r36»`, `radix-:r1:`) regenerate every render
-- A missing `aria-label` proves nothing; for most roles the name comes from text content
-- `expect.toPass()` is JavaScript-only, and what to use in Python instead
+The scripts are plain Python and need only ffmpeg, so they are useful on their own — pulling frames
+or reading a Teams transcript needs no agent at all.
 
 ## Honest scope
 
-The **method** is framework-independent, and the media/transcript scripts work on any recording.
+The **method** is framework-independent. The **gotchas** are only as general as the libraries they
+name: they were measured on a React app using AG Grid, a Base UI-family component library and Sonner
+toasts, against an environment requiring **no authentication**.
 
-The **gotchas** are only as general as the libraries they name. They were measured on a React app using
-AG Grid, a Base UI-family component library and Sonner toasts, against an environment that required **no
-authentication**. Those libraries are widespread so most entries transfer, but several paths are
-genuinely unexercised:
+Genuinely unexercised: SSO / `storageState` login flows and role-gated UI; apps with no deep-linkable
+routes; iframes, multi-tab flows, native file dialogs, canvas-only interfaces; TypeScript projects
+(the templates are Python and the TS translations are claimed, not tested); CI integration.
 
-- SSO / `storageState` login flows, and role-gated UI
-- apps whose routes carry no state, so nothing is deep-linkable
-- iframes, multi-tab flows, native OS file dialogs, canvas-only interfaces
-- TypeScript projects (the templates are Python; the TS shapes are claimed to be direct translations,
-  but that claim is untested)
-- CI integration
+Treat [`references/gotchas-web-frameworks.md`](references/gotchas-web-frameworks.md) as a **starting
+checklist, not a specification**. The *categories* transfer — portalling, virtualization, generated
+ids, mount-on-demand containers, strict-mode duplicates — but the specifics will not. Measure.
 
-Treat `references/gotchas-web-frameworks.md` as a **starting checklist, not a specification**. When your
-stack differs, the *categories* still apply — portalling, virtualization, generated ids, mount-on-demand
-containers, strict-mode duplicates — but the specifics will not. Measure, don't assume.
-
-**And then write down what you find.** If you spend an hour discovering how some library virtualizes,
-append it with the measurement that proves it. This reference only becomes genuinely general by
-accumulating real measurements from real apps, not by anyone guessing in advance. Pull requests adding
-measured gotchas for other stacks are the most valuable contribution you can make.
-
-## What it produces
-
-- A passing test suite, structured so a broken selector is a one-line fix
-- **One** continuous walkthrough video at viewport resolution, in the recording's order, so a
-  non-engineer can verify it
-- A traceability matrix: every claim from the recording marked automated / partial / blocked / not built,
-  with an explicit count and the provenance of each assertion
-- A list of open questions for a human — not silently-guessed answers
-- An instrumentation backlog: elements needing `aria-label` or `data-testid`, which usually fixes real
-  accessibility defects too
-
-## Realistic expectations
-
-On a 10-minute narrated recording of a single page, in testing: **27 of 37 narrated claims automated**,
-20 passing tests, 8 open questions, and a walkthrough video — in roughly 90 minutes of machine time,
-still needing a human review pass.
-
-"Point at a video, get a suite" is not the target. "Point at a video, get a reviewed draft plus a
-verification video" is, and that is still a large win over writing them by hand.
-
-Expect the first draft of any locator to be partly wrong. That isn't a prompting failure — locators
-derived from frames or source are hypotheses, and the only way to test a hypothesis about a running app
-is to run it. The verify loop is the product.
+**Then write down what you find.** This reference becomes general by accumulating real measurements
+from real apps, not by anyone guessing in advance. A PR adding a measured gotcha for another stack is
+the most valuable contribution here.
 
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
-
-Not affiliated with or endorsed by Microsoft or the Playwright project. Examples in the reference files
-use a fictional sample application.
