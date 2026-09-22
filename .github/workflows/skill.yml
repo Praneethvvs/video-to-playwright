@@ -1,0 +1,73 @@
+# The skill is Markdown plus a handful of dependency-free scripts, so there is not much to build.
+# What there is to protect is narrow and worth protecting:
+#
+#   - the transcript parser, because a wrong transcript does not look like a failure. It looks
+#     like a transcript, and every assertion derived from it inherits the error;
+#   - the scripts starting at all, because an agent following SKILL.md runs them by name and a
+#     broken entry point surfaces as a confusing agent transcript rather than as an error;
+#   - SKILL.md not referring to files that do not exist, which is how vendored instructions rot.
+
+name: skill
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install pytest
+        run: python -m pip install --quiet pytest
+
+      # 3.10 is the floor claimed in the README. Testing only on a current version would let a
+      # match statement or a `X | Y` annotation in a runtime position through, and the person it
+      # breaks for is the one following the documented minimum.
+      - name: Transcript parser
+        run: python -m pytest tests -q
+
+      - name: Every script starts
+        # `--help` is enough: it proves the module imports, the syntax is valid on this Python and
+        # the argument parser is wired. An agent runs these by name, so a script that cannot start
+        # shows up as a puzzling agent transcript rather than as a build failure.
+        run: |
+          for script in scripts/*.py; do
+            case "$script" in */_*) continue;; esac
+            echo "--- $script"
+            python "$script" --help > /dev/null
+          done
+
+      - name: Referenced files exist
+        # SKILL.md and AGENTS.md tell an agent to open specific paths. A rename that misses one
+        # sends the agent looking for a file that is not there, and it will improvise instead.
+        run: |
+          python - <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          missing = []
+          for doc in ("SKILL.md", "AGENTS.md", "README.md"):
+              text = Path(doc).read_text(encoding="utf-8")
+              for ref in set(re.findall(r"(?:scripts|references|assets)/[\w./-]+", text)):
+                  ref = ref.rstrip(".,)")
+                  if not Path(ref).exists():
+                      missing.append(f"{doc} -> {ref}")
+
+          for line in sorted(missing):
+              print("MISSING", line)
+          print(f"{len(missing)} broken reference(s)")
+          sys.exit(1 if missing else 0)
+          PY

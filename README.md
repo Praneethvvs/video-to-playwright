@@ -38,7 +38,7 @@ plain Python, so any harness that can read files and run shell commands will do.
 Skills are discovered from `~/.claude/skills/`, and trigger from the request itself:
 
 ```bash
-git clone https://github.com/<you>/video-to-playwright.git ~/.claude/skills/video-to-playwright
+git clone https://github.com/Praneethvvs/video-to-playwright.git ~/.claude/skills/video-to-playwright
 ```
 
 > Here's a recording of our release checks: `~/recordings/checkout-flow.mp4`, and the transcript.
@@ -50,7 +50,7 @@ Clone it anywhere, then **point the agent at the workflow explicitly** — Codex
 files the way Claude Code does, so it needs the instruction:
 
 ```bash
-git clone https://github.com/<you>/video-to-playwright.git
+git clone https://github.com/Praneethvvs/video-to-playwright.git
 ```
 
 > Read `video-to-playwright/SKILL.md` and follow it. Here's the recording:
@@ -84,18 +84,25 @@ Slower than the full workflow, but no licence required.
 ## What's in here
 
 ```
-SKILL.md                                  the 11-step workflow
+SKILL.md                                  the workflow: 12 steps, plus 1b, 1c and 11b
+AGENTS.md                                 always-on rules, picked up automatically by Codex
 references/
   gotchas-web-frameworks.md               locator traps, with the measurements that prove them
   clarification-loop.md                   what to ask, when, and what never to ask
   verification-loop.md                    reading failures, and knowing when to stop
   recording-verification-video.md         producing the walkthrough
+  silent-recordings.md                    no narration, and the recording cannot be redone
+  running-with-codex.md                   codex exec flags, and the quoting trap that breaks prompts
 scripts/
   probe_media.py                          duration, resolution, and whether the audio has speech
   extract_frames.py                       auto-tuned scene detection + uniform coverage + gap report
   grab_frame.py                           precise frames at native resolution, with crop and zoom
-  read_transcript.py                      .vtt / .srt / .docx / .txt -> tagged utterances
+  read_transcript.py                      .vtt / .srt / .docx / .txt / .md -> attributed utterances
+  build_project_map.py                    capture the structural baseline of the running app
+  check_drift.py                          compare the app against that baseline before trusting a pass
 assets/                                   conftest, page-object and walkthrough templates
+tests/                                    the transcript parser's own tests
+docs/usage.html                           the same guide, formatted for sharing
 ```
 
 The scripts are plain Python with no dependencies beyond ffmpeg, so they're useful on their own if you
