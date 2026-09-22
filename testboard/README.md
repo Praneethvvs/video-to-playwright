@@ -86,6 +86,55 @@ compiled-in roots, so behind an intercepting proxy every model call fails with
 Windows testboard exports the system trust store to a bundle and points the agent at it; in a
 container there is no OS store to export, so the bundle is mounted.
 
+## Nothing enters the suite without a person saying so
+
+A test is in the suite because somebody looked at it and accepted it, not because it exists. Both
+ways a test can arrive are treated identically:
+
+| | |
+|---|---|
+| An agent wrote it here | it appears as **pending** after the conversion run |
+| Somebody merged a pull request | it appears as **pending** at the next collection |
+
+Pending tests are excluded from "Run all approved" — testboard passes `--deselect` for each — and
+approving one records who did it and when. You can still run a pending test deliberately; that is
+how you check it before accepting it.
+
+This is keyed on the nodeid rather than a marker or a directory, which is what makes it work for a
+test that arrived through a merge, a thing testboard had no part in creating.
+
+The first collection in a new installation is different, and deliberately so: everything already
+in the repository is the suite as it stands, and is approved outright. Anything appearing after
+that is something nobody has looked at yet.
+
+## Where the agent's ambiguity goes
+
+A recording is often ambiguous — it shows a click but not why, or an outcome the narrator never
+named. The agent says so in its closing report, which the recording's page shows.
+
+**testboard does not try to hold that conversation.** It has no way to verify an answer against the
+application, and a half-remembered reply typed into a box becomes an assertion nobody can trace
+back to anything. The page says to continue in your own Codex session, open a pull request, and
+let the merged tests arrive here as pending. That keeps every answer attached to a commit and a
+review, which is where an answer of that kind belongs.
+
+## Local development, cluster execution
+
+Writing tests wants a fast local loop: edit, click re-run, read the output in seconds. Running them
+against an environment only reachable from inside the cluster wants a pod. Both are the same
+application and the same database file.
+
+| | local | in the cluster |
+|---|---|---|
+| purpose | writing and reviewing tests | running them against dev |
+| state | `.testboard/` in your checkout | the same path, on a PersistentVolumeClaim |
+| credential | your `codex login` | `CODEX_API_KEY` from a Secret |
+
+One caveat stated plainly rather than buried: **the Results column counts runs started through
+testboard.** A run in the Azure DevOps pipeline does not appear there. Consolidating those means
+either running the suite through the in-cluster testboard instead, or teaching it to ingest the
+pipeline's JUnit XML — which is not built.
+
 ## What it will not do
 
 **It will not pretend to know something it does not.** A drift check that could not reach the

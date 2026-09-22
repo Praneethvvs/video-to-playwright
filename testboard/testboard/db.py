@@ -327,6 +327,20 @@ class Database:
     def pending_tests(self) -> list[dict]:
         return [t for t in self.inventory() if t["state"] == "pending"]
 
+    def state_counts(self) -> dict[str, int]:
+        """How many tests are in each state, without loading and JSON-parsing all of them.
+
+        This runs on every page render for the navigation badge, so it is a COUNT rather than a
+        scan. The difference does not matter at eight tests and does at eight hundred.
+        """
+        rows = self.query(
+            "SELECT state, COUNT(*) AS n FROM inventory WHERE present = 1 GROUP BY state"
+        )
+        counts = {"approved": 0, "pending": 0, "rejected": 0}
+        for row in rows:
+            counts[row["state"]] = row["n"]
+        return counts
+
     def inventory(self, present_only: bool = True) -> list[dict]:
         sql = "SELECT * FROM inventory"
         if present_only:
