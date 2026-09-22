@@ -242,18 +242,31 @@ sqlite3 .testboard/testboard.db \
 ```
 
 That is faster than asking for a file the team has already handed over, and it is the same text
-the Generate button feeds an agent. `--with-codex` adds the SDK so that button works at all.
+the Convert button feeds an agent. `--with-codex` adds the SDK so that button works at all.
+
+If the team runs the suite in a pipeline, point that pipeline at `POST /api/runs/junit` with its
+JUnit report — `.pipelines/ci.yaml` in a scaffolded repo already does. Without it the dashboard
+can only describe runs somebody started in its own interface, and will say "never run from here"
+about tests the pipeline has been running green for weeks.
 
 The installer infers `testboard.yaml` from what is actually in the repo — test paths from
 `testpaths`, environment variable names from `conftest.py`, marker names from the registered
 markers — and writes it **only if it is absent**. Tell the person to read the inferred values
 rather than trusting them.
 
-Two things to know before recommending it:
+Things to know before recommending it:
 
 - **The application is not committed.** Only `testboard.yaml` and `testboard.lock` are; the code
   installs into a gitignored `.testboard/`. Upgrading is re-running the installer.
 - **Python and pytest only.** It refuses a non-Python repo rather than half-working.
+- **A newly collected test is pending, not part of the suite.** That applies to whatever an agent
+  writes and to whatever a merge brings in. "Run all" skips anything unapproved, and approving
+  records who did it. Do not expect a generated test to be in the gate: somebody has to accept it.
+- **It refuses to listen on a non-loopback address without `TESTBOARD_TOKEN`.** That is deliberate
+  and not a bug to work around; it can start runs that mutate a shared environment.
+- **The agent's open questions are not answered in the dashboard.** It shows what the agent
+  reported and points the reader back to their own session and a pull request, because nothing
+  here can verify an answer against the application.
 
 If the repo uses `--strict-markers` and you intend to quarantine anything, check that the
 quarantine marker is actually registered in `pyproject.toml` first. It frequently is not, and then

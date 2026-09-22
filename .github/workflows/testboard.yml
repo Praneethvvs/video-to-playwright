@@ -1,0 +1,113 @@
+# testboard's own tests, on every change to it.
+#
+# The suite this skill produces has a pipeline. The tool that manages that suite did not, which is
+# a slightly absurd place to have left it — the code that decides whether a test is allowed into
+# a suite is exactly the code you want a gate on.
+#
+# Fast on purpose: no browser, no network, no Codex credential. The parts that need those are
+# verified by hand against a real repository, and saying so is better than pretending a mock
+# proves anything about them.
+
+name: testboard
+
+on:
+  push:
+    branches: [main]
+    paths: ['testboard/**', '.github/workflows/testboard.yml']
+  pull_request:
+    paths: ['testboard/**', '.github/workflows/testboard.yml']
+
+# A second push supersedes the first; there is nothing to learn from a run against a commit that
+# is already behind.
+concurrency:
+  group: testboard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor the package declares, and current. Between them they catch both an accidental
+        # use of something newer than requires-python and a deprecation in the latest release.
+        python: ['3.11', '3.13']
+    defaults:
+      run:
+        working-directory: testboard
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install
+        run: python -m pip install --quiet -e ".[dev]"
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Every module imports
+        # A syntax error or a bad import in a module the tests do not reach still breaks the
+        # application at startup. Importing each one is a cheap floor under that.
+        run: |
+          python - <<'PY'
+          import importlib
+          import pkgutil
+
+          import testboard
+
+          failed = []
+          for module in pkgutil.iter_modules(testboard.__path__, "testboard."):
+              try:
+                  importlib.import_module(module.name)
+              except Exception as exc:                       # noqa: BLE001
+                  failed.append(f"{module.name}: {type(exc).__name__}: {exc}")
+          for line in failed:
+              print(line)
+          raise SystemExit(1 if failed else 0)
+          PY
+
+      - name: The app builds, and refuses an unsafe bind
+        # Two properties worth a gate. The app must construct without a repository to serve, and
+        # it must refuse to listen on a public address with no token — the one safety rule that
+        # is stated as non-negotiable in the README.
+        run: |
+          python - <<'PY'
+          from testboard import auth
+
+          assert auth.policy_for("127.0.0.1").mode == "trusted"
+          try:
+              auth.policy_for("0.0.0.0")
+          except auth.AuthError:
+              print("refused a public bind without a token, as it must")
+          else:
+              raise SystemExit("a public bind without a token was allowed")
+          PY
+
+      - name: Templates parse
+        # Jinja only reports a broken template when something renders it, which in this project
+        # means finding out from a 500 on a page nobody happened to visit during QA.
+        #
+        # The custom filters have to be registered or every template that uses one fails to
+        # compile here for a reason that has nothing to do with the template. Keeping this list
+        # in step with app.py is the cost of the check; forgetting to is a red build, not a
+        # silent pass, which is the right way round.
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+          root = Path("testboard/templates")
+          env = Environment(loader=FileSystemLoader(root), autoescape=select_autoescape())
+          env.filters["when"] = lambda value: value          # registered in app.create_app
+
+          names = sorted(p.name for p in root.glob("*.html"))
+          for name in names:
+              env.get_template(name)
+          print(f"{len(names)} template(s) parsed: {', '.join(names)}")
+          PY
