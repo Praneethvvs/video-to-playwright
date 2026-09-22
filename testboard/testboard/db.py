@@ -40,20 +40,41 @@ CREATE TABLE IF NOT EXISTS runs (
     pinned            INTEGER NOT NULL DEFAULT 0,
     artifacts_pruned  INTEGER NOT NULL DEFAULT 0,
     totals_json       TEXT,                      -- parsed JUnit counts
-    message           TEXT
+    message           TEXT,
+    -- What the working tree was when this ran. A green run against an unknown commit tells you
+    -- almost nothing three weeks later, and `dirty` matters most of all: a pass from a tree with
+    -- uncommitted edits is not a pass anybody else can reproduce.
+    git_sha           TEXT,
+    git_branch        TEXT,
+    git_subject       TEXT,
+    git_author        TEXT,
+    git_dirty         INTEGER
 );
 CREATE INDEX IF NOT EXISTS runs_status   ON runs(status);
 CREATE INDEX IF NOT EXISTS runs_target   ON runs(kind, target, id DESC);
 CREATE INDEX IF NOT EXISTS runs_finished ON runs(finished_at);
 
+-- Every test testboard knows about, and whether a human has accepted it.
+--
+-- A test arrives one of two ways: an agent generated it here, or somebody merged a pull request
+-- and it turned up in the next collection. Both are treated identically — newly seen means
+-- **pending**, and pending stays out of "run all" until a person approves it and their name is
+-- recorded against that decision. That is the whole promotion mechanism, and keeping it keyed on
+-- the nodeid rather than on a marker or a directory is what lets it work for a test that arrived
+-- through a merge, which nothing here was involved in creating.
 CREATE TABLE IF NOT EXISTS inventory (
-    nodeid      TEXT PRIMARY KEY,
-    file        TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    markers     TEXT NOT NULL DEFAULT '[]',
-    present     INTEGER NOT NULL DEFAULT 1,      -- 0 once a collect no longer returns it
-    first_seen  TEXT NOT NULL,
-    last_seen   TEXT NOT NULL
+    nodeid       TEXT PRIMARY KEY,
+    file         TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    markers      TEXT NOT NULL DEFAULT '[]',
+    present      INTEGER NOT NULL DEFAULT 1,     -- 0 once a collect no longer returns it
+    first_seen   TEXT NOT NULL,
+    last_seen    TEXT NOT NULL,
+    state        TEXT NOT NULL DEFAULT 'pending',-- pending | approved | rejected
+    decided_by   TEXT,
+    decided_at   TEXT,
+    origin       TEXT,                           -- baseline | generated | merged
+    source_id    INTEGER                         -- the recording it came from, when generated
 );
 
 -- Per-test outcomes, keyed by nodeid and reported by the plugin at run time. This is what lets a
@@ -123,6 +144,54 @@ class Database:
         with self._lock:
             self._conn.executescript(SCHEMA)
             self._conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns a newer testboard expects to a database an older one created.
+
+        `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so a schema
+        change is invisible to every database that predates it. Adding the missing columns is the
+        whole migration: nothing here is ever renamed or retyped, because a run's history is
+        append-only and rewriting it would defeat the point of keeping it.
+        """
+        wanted = {
+            "runs": {
+                "git_sha": "TEXT", "git_branch": "TEXT", "git_subject": "TEXT",
+                "git_author": "TEXT", "git_dirty": "INTEGER",
+            },
+            "inventory": {
+                "state": "TEXT NOT NULL DEFAULT 'pending'", "decided_by": "TEXT",
+                "decided_at": "TEXT", "origin": "TEXT", "source_id": "INTEGER",
+            },
+            "sources": {"last_generation_run": "INTEGER"},
+        }
+        added: set[str] = set()
+        with self._lock:
+            for table, columns in wanted.items():
+                have = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+                if not have:
+                    continue
+                for column, decl in columns.items():
+                    if column not in have:
+                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                        added.add(f"{table}.{column}")
+
+            # Backfill, at the one moment it is unambiguous. `state` defaults to 'pending', which
+            # is right for a test that appears from now on and wrong for every test that was
+            # already in the suite before approval existed as an idea. Immediately after the
+            # column is added, every row present is by definition pre-existing — so they are the
+            # baseline. Waiting until later would make this impossible to tell.
+            if "inventory.state" in added:
+                self._conn.execute(
+                    "UPDATE inventory SET state = 'approved', origin = 'baseline', "
+                    "decided_by = 'the suite as it stood', decided_at = ?",
+                    (utcnow(),),
+                )
+            self._conn.commit()
+        if added:
+            import logging
+            logging.getLogger("testboard.db").info(
+                "migrated: added %s", ", ".join(sorted(added)))
 
     # --- plumbing --------------------------------------------------------------------------
     def query(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
@@ -210,24 +279,53 @@ class Database:
         return {r["target"]: r for r in rows}
 
     # --- inventory -------------------------------------------------------------------------
-    def replace_inventory(self, items: list[dict]) -> None:
-        """Mark everything absent, then re-assert what collection just returned.
+    def replace_inventory(self, items: list[dict], *, origin: str = "merged",
+                          source_id: int | None = None) -> list[str]:
+        """Re-assert what collection just returned. Returns the nodeids that are new.
 
-        Rows are kept rather than deleted so a historical run can still say which file its test
-        used to live in.
+        Rows are never deleted, only marked absent, so a historical run can still say which file
+        its test used to live in.
+
+        **The very first collection is the existing suite, and is approved outright.** Anything
+        appearing after that is something a person has not looked at yet — whether an agent wrote
+        it here or a merge brought it in — so it lands as pending. Getting this backwards would
+        either drown a new installation in approvals nobody asked for, or silently promote every
+        future arrival, which is the thing approval exists to prevent.
         """
         now = utcnow()
         with self._lock:
+            first_ever = not self._conn.execute(
+                "SELECT 1 FROM inventory LIMIT 1").fetchone()
+            known = {r["nodeid"] for r in self._conn.execute("SELECT nodeid FROM inventory")}
+            new_ids = [it["nodeid"] for it in items if it["nodeid"] not in known]
+
             self._conn.execute("UPDATE inventory SET present = 0")
             for it in items:
+                is_new = it["nodeid"] not in known
+                state = "approved" if (first_ever or not is_new) else "pending"
+                row_origin = "baseline" if first_ever else (origin if is_new else None)
                 self._conn.execute(
                     "INSERT INTO inventory(nodeid, file, name, markers, present, first_seen, "
-                    "last_seen) VALUES(?, ?, ?, ?, 1, ?, ?) "
+                    "last_seen, state, decided_by, decided_at, origin, source_id) "
+                    "VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(nodeid) DO UPDATE SET file=excluded.file, name=excluded.name, "
                     "markers=excluded.markers, present=1, last_seen=excluded.last_seen",
-                    (it["nodeid"], it["file"], it["name"], json.dumps(it["markers"]), now, now),
+                    (it["nodeid"], it["file"], it["name"], json.dumps(it["markers"]), now, now,
+                     state, "first collection" if first_ever else None,
+                     now if first_ever else None, row_origin,
+                     source_id if is_new and not first_ever else None),
                 )
             self._conn.commit()
+        return new_ids
+
+    def decide(self, nodeid: str, state: str, who: str) -> None:
+        self.execute(
+            "UPDATE inventory SET state = ?, decided_by = ?, decided_at = ? WHERE nodeid = ?",
+            (state, who, utcnow(), nodeid),
+        )
+
+    def pending_tests(self) -> list[dict]:
+        return [t for t in self.inventory() if t["state"] == "pending"]
 
     def inventory(self, present_only: bool = True) -> list[dict]:
         sql = "SELECT * FROM inventory"

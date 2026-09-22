@@ -5,33 +5,101 @@
 <div class="pagehead">
   <div>
     <h1>Tests</h1>
-    <p>Collected by asking pytest, not by reading the source — this is what would actually run.</p>
+    <p>{{ counts['approved'] }} in the suite
+       {%- if counts['pending'] %} · <strong>{{ counts['pending'] }} awaiting approval</strong>{% endif %}
+       {%- if counts['rejected'] %} · {{ counts['rejected'] }} rejected{% endif %}
+       · collected by asking pytest, so this is what would actually run</p>
   </div>
   <div class="aside">
     <form method="post" action="/inventory/refresh" class="inline">
-      <button class="ghost"><svg><use href="#i-refresh"/></svg> Refresh</button>
+      <button class="ghost"><svg><use href="#i-refresh"/></svg> Re-collect</button>
     </form>
   </div>
 </div>
 
+{# ── pending approval ───────────────────────────────────────────────────────────────── #}
+{% if pending %}
+<h2 id="pending">Awaiting approval <span class="chip is-warn">{{ pending | length }}</span></h2>
+<p class="muted small" style="margin-top:-6px">
+  These are not in the suite yet and “Run all” skips them. Read what each one asserts before
+  accepting it: the question is whether every assertion traces back to something the tester
+  actually said mattered.
+</p>
+<div class="card flush pending-card">
+  <div class="rows">
+  {% for t in pending %}
+    <div class="row">
+      <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
+      <div class="row-main">
+        {% set stem, bracket, param = t['name'].partition('[') %}
+        <div class="row-name mono">{{ stem }}{% if bracket %}<span class="muted">[{{ param }}</span>{% endif %}</div>
+        <div class="row-sub">
+          <span class="mono">{{ t['file'] }}</span>
+          · first seen {{ t['first_seen'] | when }}
+          {% if t['origin'] == 'generated' %}
+            · generated from
+            {%- set src = sources.get(t['source_id']) %}
+            {% if src %}<a class="linky" href="/recordings/{{ src['id'] }}">{{ src['title'][:44] }}</a>
+            {% else %}a recording{% endif %}
+          {% elif t['origin'] == 'merged' %}· arrived in a merge{% endif %}
+        </div>
+      </div>
+      <div class="row-actions" style="width:250px">
+        <form method="post" action="/run" class="inline">
+          <input type="hidden" name="target" value="{{ t['nodeid'] }}">
+          <input type="hidden" name="label" value="{{ t['name'] }}">
+          {% if t['destructive'] %}
+            <button class="danger sm" data-confirm="{{ t['name'] }} changes data in {{ base_url or base_url_env }}.">Run · mutates data</button>
+          {% else %}
+            <button class="quiet sm"><svg><use href="#i-play"/></svg> Run</button>
+          {% endif %}
+        </form>
+        <form method="post" action="/tests/decide" class="inline">
+          <input type="hidden" name="nodeid" value="{{ t['nodeid'] }}">
+          <input type="hidden" name="state" value="rejected">
+          <button class="ghost sm">Reject</button>
+        </form>
+        <form method="post" action="/tests/decide" class="inline">
+          <input type="hidden" name="nodeid" value="{{ t['nodeid'] }}">
+          <input type="hidden" name="state" value="approved">
+          <button class="sm"><svg><use href="#i-check"/></svg> Approve</button>
+        </form>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+  <div class="row" style="background:#fcfcfb">
+    <div class="row-main muted small">Approving records your name and the time against each test.</div>
+    <div class="row-actions" style="width:auto">
+      <form method="post" action="/tests/decide-all" class="inline">
+        <input type="hidden" name="state" value="approved">
+        <button class="quiet sm">Approve all {{ pending | length }}</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── the suite ──────────────────────────────────────────────────────────────────────── #}
+<h2>The suite</h2>
 <div class="toolbar">
   <form method="post" action="/run" class="inline">
     <input type="hidden" name="label" value="Whole suite">
-    <button><svg><use href="#i-play"/></svg> Run all</button>
+    <button><svg><use href="#i-play"/></svg> Run all approved</button>
   </form>
   {% for m in markers %}
   <form method="post" action="/run" class="inline">
     <input type="hidden" name="target" value="-m {{ m }}">
     <input type="hidden" name="label" value="Marker: {{ m }}">
     {% if m in never_batch %}
-      <button class="danger" data-confirm="Every test marked {{ m }} changes data in {{ base_url or base_url_env }}.">{{ m }}</button>
+      <button class="danger" data-confirm="Every test marked {{ m }} changes data in {{ base_url or base_url_env }}.">Run {{ m }}</button>
     {% else %}
-      <button class="ghost">{{ m }}</button>
+      <button class="ghost">Run {{ m }}</button>
     {% endif %}
   </form>
   {% endfor %}
   {% if never_batch %}
-  <span class="muted tiny push">“Run all” excludes {{ never_batch | join(', ') }} by policy</span>
+  <span class="muted tiny push">“Run all approved” skips {{ never_batch | join(', ') }} and anything unapproved</span>
   {% endif %}
 </div>
 
@@ -57,18 +125,19 @@
   </div>
 
   {% for t in items %}
-  <div class="row">
-    <span class="badge sm {% if t['destructive'] %}peach{% elif t['quarantined'] %}lilac{% else %}blue{% endif %}">
-      <svg><use href="#i-{{ 'alert' if t['destructive'] else ('pause' if t['quarantined'] else 'flask') }}"/></svg>
+  <div class="row{% if t['state'] != 'approved' %} is-muted{% endif %}">
+    <span class="badge sm {% if t['state'] == 'pending' %}peach{% elif t['state'] == 'rejected' %}{% elif t['destructive'] %}peach{% elif t['quarantined'] %}lilac{% else %}blue{% endif %}">
+      <svg><use href="#i-{{ 'alert' if t['destructive'] or t['state'] == 'pending' else ('pause' if t['quarantined'] else 'flask') }}"/></svg>
     </span>
 
     <div class="row-main">
-      {# pytest-playwright parametrises every nodeid by browser, so the [chromium] suffix is on
-         every row and carries no information. Dimmed rather than dropped: it is still part of
-         the test's identity, and the Run button sends the full nodeid. #}
       {% set stem, bracket, param = t['name'].partition('[') %}
       <div class="row-name mono">{{ stem }}{% if bracket %}<span class="muted">[{{ param }}</span>{% endif %}</div>
       <div class="row-sub">
+        {% if t['state'] == 'pending' %}<span class="chip is-warn">awaiting approval</span>
+        {% elif t['state'] == 'rejected' %}<span class="chip">rejected{% if t['decided_by'] %} by {{ t['decided_by'] }}{% endif %}</span>
+        {% elif t['decided_by'] and t['origin'] != 'baseline' %}<span class="chip is-good" title="Approved {{ t['decided_at'] }}">approved by {{ t['decided_by'] }}</span>
+        {% endif %}
         {% for m in t['markers'] %}{{ m }}{% if not loop.last %} · {% endif %}{% endfor %}
       </div>
     </div>
@@ -85,6 +154,13 @@
 
     <div class="row-actions">
       <a class="btn icon" href="/runs?target={{ t['nodeid'] | urlencode }}" title="History"><svg><use href="#i-clock"/></svg></a>
+      {% if t['state'] == 'rejected' %}
+      <form method="post" action="/tests/decide" class="inline">
+        <input type="hidden" name="nodeid" value="{{ t['nodeid'] }}">
+        <input type="hidden" name="state" value="approved">
+        <button class="ghost sm">Approve</button>
+      </form>
+      {% endif %}
       <form method="post" action="/run" class="inline">
         <input type="hidden" name="target" value="{{ t['nodeid'] }}">
         <input type="hidden" name="label" value="{{ t['name'] }}">

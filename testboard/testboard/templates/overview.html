@@ -5,41 +5,48 @@
 <div class="pagehead">
   <div>
     <h1>{{ repo_name }}</h1>
-    <p>{{ test_count }} test{{ '' if test_count == 1 else 's' }} ·
-       {% if last_run %}last run {{ last_run['finished_at'] | when }}{% else %}nothing run from here yet{% endif %}</p>
+    <p>{{ counts['approved'] }} approved test{{ '' if counts['approved'] == 1 else 's' }}
+       {%- if counts['pending'] %}, {{ counts['pending'] }} awaiting approval{% endif %}
+       {%- if last_run %} · last run {{ last_run['finished_at'] | when }}{% endif %}</p>
   </div>
   <div class="aside">
     <form method="post" action="/inventory/refresh" class="inline">
       <button class="ghost"><svg><use href="#i-refresh"/></svg> Refresh</button>
     </form>
-    <a class="btn" href="/tests"><svg><use href="#i-play"/></svg> Run a test</a>
+    <a class="btn" href="/tests"><svg><use href="#i-play"/></svg> Run tests</a>
   </div>
 </div>
 
-{# One card, divided into cells. Each carries its own timestamp and its own explicit "no data"
-   state — a tile that cannot say when it was last true reads as current, which is worse than
-   showing nothing. #}
+{% if counts['pending'] %}
+<div class="banner is-info">
+  <span class="badge sm blue"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>{{ counts['pending'] }} test{{ '' if counts['pending'] == 1 else 's' }} awaiting
+    approval.</strong> New tests — whether an agent wrote them here or a merge brought them in —
+    stay out of the suite until somebody accepts them.
+    <a class="linky" href="/tests#pending">Review them</a>
+  </div>
+</div>
+{% endif %}
+
+{# Four tiles, each carrying its own timestamp and its own explicit "no data" state. A tile that
+   cannot say when it was last true reads as current, which is worse than showing nothing. #}
 <div class="card">
   <div class="strip">
 
     <div class="cell">
       <div class="cell-top">
-        <span class="badge {% if map_info.freshness == 'stale' %}rose{% elif map_info.freshness == 'warn' %}peach{% else %}mint{% endif %}"><svg><use href="#i-map"/></svg></span>
-        <span class="lab">Project map</span>
+        <span class="badge mint"><svg><use href="#i-list"/></svg></span>
+        <span class="lab">Tests</span>
       </div>
-      {% if not map_info.present %}
-        <div class="cell-val is-none">missing</div>
-        <div class="cell-note">{{ map_info.schema_note }}</div>
-      {% else %}
-        <div class="cell-val {% if map_info.freshness == 'stale' %}is-bad{% elif map_info.freshness == 'warn' %}is-warn{% endif %}">{{ map_info.age | round(1) }} days old</div>
-        <div class="cell-note">
-          {{ map_info.route_count }} routes, captured from dev
-          {% if map_info.freshness == 'stale' %}<br><strong>Past the staleness threshold — drift below is measured against an old baseline.</strong>{% endif %}
-        </div>
-      {% endif %}
-      <div class="cell-act">
-        <form method="post" action="/jobs/build_map"><button class="quiet sm">Recapture</button></form>
+      <div class="cell-val">{{ counts['approved'] }}</div>
+      <div class="cell-note">
+        in the suite
+        {%- if counts['pending'] %}<br><strong>{{ counts['pending'] }} pending approval</strong>{% endif %}
+        {%- if counts['rejected'] %}<br>{{ counts['rejected'] }} rejected{% endif %}
+        {%- if quarantined %}<br>{{ quarantined | length }} quarantined{% endif %}
       </div>
+      <div class="cell-act"><a class="btn quiet sm" href="/tests">Open</a></div>
     </div>
 
     <div class="cell">
@@ -59,58 +66,69 @@
 
     <div class="cell">
       <div class="cell-top">
+        <span class="badge {% if map_info.freshness == 'stale' %}rose{% elif map_info.freshness == 'warn' %}peach{% else %}mint{% endif %}"><svg><use href="#i-map"/></svg></span>
+        <span class="lab">Project map</span>
+      </div>
+      {% if not map_info.present %}
+        <div class="cell-val is-none">missing</div>
+        <div class="cell-note">{{ map_info.schema_note }}</div>
+      {% else %}
+        <div class="cell-val {% if map_info.freshness == 'stale' %}is-bad{% elif map_info.freshness == 'warn' %}is-warn{% endif %}">{{ map_info.age | round(1) }} days old</div>
+        <div class="cell-note">
+          {{ map_info.route_count }} routes, captured from dev
+          {%- if map_info.freshness == 'stale' %}<br><strong>Past the staleness threshold.</strong>{% endif %}
+        </div>
+      {% endif %}
+      <div class="cell-act">
+        <form method="post" action="/jobs/build_map"><button class="quiet sm">Recapture</button></form>
+      </div>
+    </div>
+
+    <div class="cell">
+      <div class="cell-top">
         <span class="badge {% if last_run and last_run['status'] == 'passed' %}mint{% elif last_run %}rose{% else %}blue{% endif %}"><svg><use href="#i-flask"/></svg></span>
-        <span class="lab">Last suite run</span>
+        <span class="lab">Last run</span>
       </div>
       {% if last_run %}
         <div class="cell-val {% if last_run['status'] == 'passed' %}is-good{% elif last_run['status'] in ('failed','error','timeout','crashed') %}is-bad{% else %}is-warn{% endif %}">{{ last_run['status'] }}</div>
-        <div class="cell-note"><a class="linky" href="/runs/{{ last_run['id'] }}">{{ last_run['label'] }}</a></div>
+        <div class="cell-note">
+          <a class="linky" href="/runs/{{ last_run['id'] }}">{{ last_run['label'] }}</a><br>
+          {{ last_run['finished_at'] | when }}
+          {% if last_run['git_sha'] %}
+            <br><span class="mono">{{ last_run['git_sha'] }}</span>
+            {%- if last_run['git_branch'] %} on {{ last_run['git_branch'] }}{% endif %}
+            {%- if last_run['git_dirty'] %} <span class="chip is-warn">uncommitted</span>{% endif %}
+            {% if last_run['git_subject'] %}<br><span title="{{ last_run['git_subject'] }}">{{ last_run['git_subject'][:44] }}{% if last_run['git_subject']|length > 44 %}…{% endif %}</span>{% endif %}
+          {% endif %}
+        </div>
       {% else %}
         <div class="cell-val is-none">never</div>
         <div class="cell-note">nothing has been run from here yet</div>
       {% endif %}
     </div>
 
-    <div class="cell">
-      <div class="cell-top">
-        <span class="badge {% if quarantined %}peach{% else %}lilac{% endif %}"><svg><use href="#i-pause"/></svg></span>
-        <span class="lab">Quarantined</span>
-      </div>
-      <div class="cell-val {% if quarantined %}is-warn{% endif %}">{{ quarantined | length }}</div>
-      <div class="cell-note">
-        {% if quarantined %}held out of the gate for an unresolved change
-          <ul class="bare">{% for t in quarantined %}<li class="mono tiny">{{ t['name'] }}</li>{% endfor %}</ul>
-        {% else %}nothing is being held out of the gate{% endif %}
-      </div>
-    </div>
-
   </div>
 </div>
 
 <h2>Results</h2>
+<p class="muted small" style="margin-top:-6px">Across the {{ counts['approved'] }} approved tests,
+from runs started here. A run in the pipeline does not appear in this column.</p>
 <div class="card flush">
   <div class="rows">
-    {% for key, label, tone in [('passed','Passed','mint'), ('failed','Failed','rose'),
-                                ('error','Errored','rose'), ('skipped','Skipped','peach'),
-                                ('unknown','Never run from here','blue')] %}
-      {% if counts[key] or key in ('passed', 'unknown') %}
+    {% for key, label, tone, icon in [
+        ('passed','Passed','mint','check'), ('failed','Failed','rose','alert'),
+        ('error','Errored','rose','alert'), ('skipped','Skipped','peach','pause'),
+        ('unknown','Never run from here','blue','clock')] %}
+      {% if results[key] or key in ('passed', 'unknown') %}
       <div class="row">
-        <span class="badge sm {{ tone }}"><svg><use href="#i-{{ 'check' if key == 'passed' else ('alert' if key in ('failed','error') else ('pause' if key == 'skipped' else 'clock')) }}"/></svg></span>
+        <span class="badge sm {{ tone }}"><svg><use href="#i-{{ icon }}"/></svg></span>
         <div class="row-main"><div class="row-name">{{ label }}</div></div>
-        <div class="row-slot"><span class="cell-val" style="font-size:17px">{{ counts[key] }}</span></div>
+        <div class="row-slot"><span class="cell-val" style="font-size:17px">{{ results[key] }}</span></div>
       </div>
       {% endif %}
     {% endfor %}
   </div>
 </div>
-
-{% if counts['unknown'] == test_count and test_count %}
-<div class="banner is-info">
-  <span class="badge sm blue"><svg><use href="#i-clock"/></svg></span>
-  <div>None of these have been run from testboard yet. That is not the same as “no results” —
-  the pipeline may well have run them. This column only knows about runs started here.</div>
-</div>
-{% endif %}
 
 {% if map_info.present and not map_info.schema_ok %}
 <div class="banner is-warn">
@@ -120,8 +138,6 @@
 {% endif %}
 
 {% if sweep %}
-{# A div, not a p: a form is not phrasing content, so a browser closes the paragraph before it
-   and the button lands on its own line. #}
 <div class="muted tiny" style="margin-top:18px; display:flex; align-items:center; gap:6px">
   Last artifact sweep pruned {{ sweep['pruned'] }} run(s), freed {{ sweep['freed_mb'] }} MB,
   disk {{ sweep['disk_used_percent'] }}% used ·

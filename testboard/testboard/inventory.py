@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Config
@@ -34,6 +34,7 @@ class CollectResult:
     exit_code: int
     detail: str          # stderr/stdout tail, only interesting when ok is False
     reason: str          # collected | no-tests | collection-error | harness
+    new_nodeids: list[str] = field(default_factory=list)
 
     @property
     def is_empty_but_healthy(self) -> bool:
@@ -101,11 +102,18 @@ async def collect(config: Config) -> CollectResult:
     return CollectResult(True, items, code, "", "collected")
 
 
-async def refresh(config: Config, database) -> CollectResult:
-    """Collect and persist. The previous inventory is left intact if collection failed."""
+async def refresh(config: Config, database, *, origin: str = "merged",
+                  source_id: int | None = None) -> CollectResult:
+    """Collect and persist. The previous inventory is left intact if collection failed.
+
+    `origin` labels anything that turns out to be new. The default is "merged", because outside a
+    generation run the only way a test appears is that somebody landed it — which is exactly the
+    case the approval step exists for.
+    """
     result = await collect(config)
     if result.ok:
-        database.replace_inventory(result.items)
+        result.new_nodeids = database.replace_inventory(
+            result.items, origin=origin, source_id=source_id)
     database.set_meta("collect", {
         "ok": result.ok,
         "reason": result.reason,

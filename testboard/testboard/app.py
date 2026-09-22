@@ -74,6 +74,12 @@ def create_app(config: Config) -> FastAPI:
         database.close()
 
     # --- shared view context -------------------------------------------------------------
+    def _take_flash() -> list[str]:
+        messages = database.get_meta("last_upload") or []
+        if messages:
+            database.set_meta("last_upload", [])
+        return messages
+
     def base_context(request: Request) -> dict:
         active = database.active()
         return {
@@ -90,8 +96,11 @@ def create_app(config: Config) -> FastAPI:
             "startup_checks": getattr(app.state, "startup_checks", []),
             "collect": database.get_meta("collect", {}),
             "test_total": (database.get_meta("collect", {}) or {}).get("count", 0),
+            "pending_total": len(database.pending_tests()),
             "source_total": len(database.sources()),
-            "last_upload": database.get_meta("last_upload") or [],
+            # Read once and cleared. Left in the database it becomes a message about an
+            # upload from hours ago, shown at the top of the page as though it just happened.
+            "last_upload": _take_flash(),
         }
 
     def render(name: str, request: Request, **extra) -> HTMLResponse:
@@ -110,16 +119,26 @@ def create_app(config: Config) -> FastAPI:
             "SELECT * FROM runs WHERE kind = 'pytest' AND status NOT IN ('queued','running') "
             "ORDER BY id DESC LIMIT 1"
         )
-        counts = {"passed": 0, "failed": 0, "error": 0, "skipped": 0, "unknown": 0}
+        # Outcomes are reported across the approved suite only. Mixing in tests nobody has
+        # accepted yet makes "3 failed" mean something different from one day to the next.
+        results = {"passed": 0, "failed": 0, "error": 0, "skipped": 0, "unknown": 0}
         for t in tests:
+            if t["state"] != "approved":
+                continue
             row = latest.get(t["nodeid"])
-            counts[row["outcome"] if row and row["outcome"] in counts else "unknown"] += 1
+            results[row["outcome"] if row and row["outcome"] in results else "unknown"] += 1
+        counts = {
+            "approved": sum(1 for t in tests if t["state"] == "approved"),
+            "pending": sum(1 for t in tests if t["state"] == "pending"),
+            "rejected": sum(1 for t in tests if t["state"] == "rejected"),
+        }
         return render(
             "overview.html", request,
             map_info=driftmod.map_info(config),
             drift=driftmod.drift_info(config),
             test_count=len(tests),
             counts=counts,
+            results=results,
             quarantined=quarantined,
             last_run=last_run,
             sweep=database.get_meta("last_retention_sweep"),
@@ -143,8 +162,16 @@ def create_app(config: Config) -> FastAPI:
         for t in tests:
             by_file.setdefault(t["file"], []).append(t)
         markers = sorted({m for t in tests for m in t["markers"]})
+        counts = {
+            "approved": sum(1 for t in tests if t["state"] == "approved"),
+            "pending": sum(1 for t in tests if t["state"] == "pending"),
+            "rejected": sum(1 for t in tests if t["state"] == "rejected"),
+        }
         return render("tests.html", request, by_file=by_file, markers=markers,
-                      total=len(tests), never_batch=config.safety.never_batch)
+                      total=len(tests), never_batch=config.safety.never_batch,
+                      counts=counts,
+                      pending=[t for t in tests if t["state"] == "pending"],
+                      sources={s["id"]: s for s in database.sources()})
 
     @app.get("/runs", response_class=HTMLResponse)
     async def runs_page(request: Request, target: str | None = Query(None)):
@@ -240,6 +267,24 @@ def create_app(config: Config) -> FastAPI:
             database.update_run(run_id, pinned=0 if row["pinned"] else 1)
         return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
+    @app.post("/tests/decide")
+    async def decide(request: Request, nodeid: str = Form(...), state: str = Form(...)):
+        """Promote a draft into the suite, or reject it. Who decided is part of the record."""
+        if state not in ("approved", "rejected", "pending"):
+            return JSONResponse({"error": "unknown state"}, status_code=400)
+        database.decide(nodeid, state, _who(request))
+        return RedirectResponse(request.headers.get("referer", "/tests"), status_code=303)
+
+    @app.post("/tests/decide-all")
+    async def decide_all(request: Request, state: str = Form(...), file: str = Form("")):
+        if state not in ("approved", "rejected"):
+            return JSONResponse({"error": "unknown state"}, status_code=400)
+        who = _who(request)
+        for test in database.pending_tests():
+            if not file or test["file"] == file:
+                database.decide(test["nodeid"], state, who)
+        return RedirectResponse(request.headers.get("referer", "/tests"), status_code=303)
+
     @app.post("/inventory/refresh")
     async def refresh_inventory():
         await inventory.refresh(config, database)
@@ -251,13 +296,24 @@ def create_app(config: Config) -> FastAPI:
         return RedirectResponse("/", status_code=303)
 
     # --- recordings and transcripts ---------------------------------------------------------
+    def _source_view(row) -> dict:
+        """A recording plus what came out of it: runs, tests, and how many still need a decision."""
+        runs = database.history(limit=10, target=f"source:{row['id']}")
+        tests = [t for t in database.inventory() if t["source_id"] == row["id"]]
+        return {
+            "row": row,
+            "runs": runs,
+            "last_run": runs[0] if runs else None,
+            "tests": tests,
+            "approved": [t for t in tests if t["state"] == "approved"],
+            "pending": [t for t in tests if t["state"] == "pending"],
+            "rejected": [t for t in tests if t["state"] == "rejected"],
+        }
+
     @app.get("/recordings", response_class=HTMLResponse)
     async def recordings_page(request: Request):
-        rows = database.sources()
-        runs = {}
-        for row in rows:
-            runs[row["id"]] = database.history(limit=5, target=f"source:{row['id']}")
-        return render("recordings.html", request, sources=rows, runs=runs,
+        views = [_source_view(row) for row in database.sources()]
+        return render("recordings.html", request, views=views,
                       agent=agentmod.availability(),
                       discovered=media.discover(config))
 
@@ -268,15 +324,21 @@ def create_app(config: Config) -> FastAPI:
             return HTMLResponse("<h1>No such recording</h1>", status_code=404)
         cues = json.loads(row["transcript_cues"]) if row["transcript_cues"] else []
         return render("recording.html", request, source=row, cues=cues[:400],
-                      cue_total=len(cues),
-                      runs=database.history(limit=20, target=f"source:{source_id}"),
+                      cue_total=len(cues), view=_source_view(row),
                       agent=agentmod.availability())
 
     @app.post("/recordings/upload")
-    async def upload(request: Request, files: list[UploadFile] = File(...),
+    async def upload(request: Request, files: list[UploadFile] = File(default=[]),
                      source_id: int | None = Form(None)):
+        # Optional rather than required. A missing field makes FastAPI answer 422 with a JSON
+        # validation blob, which is a dead end in a browser that just posted a form.
         messages, target = [], source_id
-        for upload_file in files:
+        real = [f for f in files if f and f.filename]
+        if not real:
+            database.set_meta("last_upload", ["No file was chosen."])
+            return RedirectResponse(request.headers.get("referer", "/recordings"),
+                                    status_code=303)
+        for upload_file in real:
             try:
                 accepted = await media.accept(
                     config, database, filename=upload_file.filename or "upload",
@@ -287,7 +349,8 @@ def create_app(config: Config) -> FastAPI:
                 target = accepted.source_id
                 messages.append(accepted.message)
             except ValueError as exc:
-                messages.append(f"{upload_file.filename}: {exc}")
+                # The exception already names the file; prefixing it again reads as a stutter.
+                messages.append(str(exc))
             finally:
                 await upload_file.close()
 
