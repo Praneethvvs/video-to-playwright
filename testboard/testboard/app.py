@@ -9,6 +9,7 @@ which the browser encodes correctly without help.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import mimetypes
@@ -149,12 +150,18 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
     app.state.db = database
     app.state.executor = executor
 
-    @app.on_event("startup")
-    async def _startup() -> None:
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        """Start the worker, then stop it. One place, so shutdown mirrors startup.
+
+        A lifespan rather than on_event: the latter is deprecated and will be removed, and a
+        long-lived service is a bad place to discover that from a dependency bump.
+        """
         config.state_dir.mkdir(parents=True, exist_ok=True)
         config.runs_dir.mkdir(parents=True, exist_ok=True)
         await executor.start()
         app.state.startup_checks = preflight.at_startup(config)
+
         # Reference retained: asyncio only holds a weak reference to a task, so a bare
         # create_task can be collected mid-flight, and its exception would be swallowed either
         # way. The first collection failing silently is how a dashboard comes up empty with no
@@ -165,11 +172,13 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
             lambda t: t.cancelled() or (t.exception() and
                                         log.error("startup collection failed: %s", t.exception()))
         )
+        try:
+            yield
+        finally:
+            await executor.stop()
+            database.close()
 
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        await executor.stop()
-        database.close()
+    app.router.lifespan_context = _lifespan
 
     # --- shared view context -------------------------------------------------------------
     def _take_flash() -> list[str]:

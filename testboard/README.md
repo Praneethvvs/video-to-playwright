@@ -238,7 +238,7 @@ Until that is settled: `kubectl port-forward svc/testboard 8770:80`.
 pip install -e ".[dev]" && pytest
 ```
 
-55 tests, about a second, no browser and no network. They cover the properties that are expensive
+82 tests, about three seconds, no browser and no network. They cover the properties that are expensive
 to be wrong about rather than aiming at coverage:
 
 | | |
