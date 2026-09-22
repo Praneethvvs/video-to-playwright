@@ -32,8 +32,13 @@ KIND_PYTEST = "pytest"
 KIND_DRIFT = "check_drift"
 KIND_MAP = "build_map"
 KIND_GENERATE = "generate"
+KIND_COLLECT = "collect"
 
-JOB_LABELS = {KIND_DRIFT: "Drift check", KIND_MAP: "Recapture project map"}
+JOB_LABELS = {
+    KIND_DRIFT: "Drift check",
+    KIND_MAP: "Recapture project map",
+    KIND_COLLECT: "Re-collect tests",
+}
 
 
 @dataclass
@@ -64,13 +69,31 @@ class Executor:
         self._housekeeper = asyncio.create_task(self._housekeeping_loop(), name="testboard-housekeeping")
 
     async def stop(self) -> None:
+        """Bring the worker down without abandoning whatever it was doing.
+
+        A generation run has no PID to kill, so killing `_proc` left the agent to be torn down by
+        process exit — possibly partway through writing test files into the working tree, with
+        nothing said about it afterwards. Interrupting it first at least gives the SDK the chance
+        to stop cleanly.
+        """
         self._stopping.set()
         self._wake.set()
-        for task in (self._worker, self._housekeeper):
-            if task:
-                task.cancel()
+
+        if self._agent is not None:
+            try:
+                await self._agent.interrupt()
+            except Exception:                       # noqa: BLE001 - shutdown must not raise
+                log.exception("could not interrupt the agent during shutdown")
         if self._proc and self._proc.returncode is None:
             await procs.kill_tree(self._proc)
+
+        tasks = [t for t in (self._worker, self._housekeeper) if t]
+        for task in tasks:
+            task.cancel()
+        # Awaited, so their finally blocks run before the loop closes. Cancelling without
+        # awaiting means the cleanup may simply not happen.
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def reconcile(self) -> None:
         """Nothing can legitimately be `running` at startup; this process just began.
@@ -170,7 +193,15 @@ class Executor:
     async def _worker_loop(self) -> None:
         await self.reap_orphans()
         while not self._stopping.is_set():
-            row = self.db.next_queued()
+            # Inside the try as well: a database error on the dequeue itself would otherwise
+            # kill the worker task, and a dead worker means every future run sits queued for
+            # ever with nothing in the interface admitting it.
+            try:
+                row = self.db.next_queued()
+            except Exception:                      # noqa: BLE001
+                log.exception("could not read the queue; retrying shortly")
+                await asyncio.sleep(5)
+                continue
             if row is None:
                 self._wake.clear()
                 try:
@@ -205,7 +236,12 @@ class Executor:
             try:
                 await asyncio.sleep(3600)
                 retention.sweep(self.config, self.db)
-                procs.sweep_orphan_browsers(self.config.state_dir)
+                # Both directories: a Playwright browser inherits pytest's working directory,
+                # which is the repository root, not the state directory.
+                procs.sweep_orphan_browsers(
+                    self.config.state_dir, self.config.repo_root,
+                    run_in_progress=self._current_run_id is not None,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:                      # noqa: BLE001
@@ -225,6 +261,27 @@ class Executor:
 
         if row["kind"] == KIND_GENERATE:
             await self._execute_generation(row, run_dir, log_path)
+            return
+
+        if row["kind"] == KIND_COLLECT:
+            # Collection starts a second pytest in the same repository. Even though it only
+            # imports conftest rather than running anything, it belongs in the queue: the one
+            # rule here is that a subprocess is started by this loop and nowhere else, and an
+            # untimed spawn from an HTTP handler had no kill path, no PID recorded and no way
+            # for anybody to see that it was happening.
+            self.db.update_run(run_id, status="running", started_at=utcnow())
+            from . import inventory
+            result = await inventory.refresh(self.config, self.db)
+            message = (f"{len(result.items)} test(s) collected"
+                       + (f", {len(result.new_nodeids)} new and awaiting approval"
+                          if result.new_nodeids else "")) if result.ok else result.detail[-500:]
+            log_path.write_text(f"{message}\n", encoding="utf-8")
+            self.db.update_run(
+                run_id, finished_at=utcnow(),
+                status="passed" if result.ok else "failed",
+                error_reason=None if result.ok else "collection_error",
+                exit_code=result.exit_code, message=message[:2000],
+            )
             return
 
         # Cancel can land between the worker dequeuing this row and the process starting. The
@@ -269,9 +326,13 @@ class Executor:
 
         self._proc = proc
         # Persisted before the first line is read, so a crash in this window still reconciles.
+        # to_thread: describe() shells out to git five times, and doing that on the event loop
+        # stalls every SSE stream and HTTP request for its duration.
+        commit = await asyncio.to_thread(gitinfo.describe, self.config.repo_root)
         self.db.update_run(run_id, status="running", started_at=utcnow(), pid=proc.pid,
-                           pid_created_at=procs.process_created_at(proc.pid),
-                           **gitinfo.describe(self.config.repo_root).as_fields())
+                           pid_created_at=await asyncio.to_thread(
+                               procs.process_created_at, proc.pid),
+                           **commit.as_fields())
 
         pump = asyncio.create_task(self._pump(run_id, proc, log_path))
         timed_out = False
@@ -339,8 +400,9 @@ class Executor:
         # subscriber is never released. Setting up the run is exactly where a mistake is most
         # likely, so it is exactly what has to be covered.
         try:
+            commit = await asyncio.to_thread(gitinfo.describe, cfg.repo_root)
             self.db.update_run(run_id, status="running", started_at=utcnow(),
-                               **gitinfo.describe(cfg.repo_root).as_fields())
+                               **commit.as_fields())
             handle = log_path.open("w", encoding="utf-8", errors="replace", newline="\n")
 
             def emit(line: str) -> None:
@@ -410,11 +472,16 @@ class Executor:
                                             source_id=source_id)
         if collected.new_nodeids:
             self.db.update_source(source_id, last_generation_run=run_id)
-            self.bus.publish(run_id, "")
-            self.bus.publish(run_id, f"{len(collected.new_nodeids)} new test(s) collected, "
-                                     f"awaiting approval:")
-            for nodeid in collected.new_nodeids:
-                self.bus.publish(run_id, f"  {nodeid}")
+            # Appended to the log as well as streamed. Publishing only to the bus meant the most
+            # useful line of the whole run — what it actually produced — was missing from the log
+            # anybody reads afterwards, because the file handle had already been closed.
+            tail = [f"{len(collected.new_nodeids)} new test(s) collected, awaiting approval:"]
+            tail += [f"  {nodeid}" for nodeid in collected.new_nodeids]
+            with log_path.open("a", encoding="utf-8", errors="replace", newline="") as fh:
+                for line in tail:
+                    fh.write(line + chr(10))
+            for line in tail:
+                self.bus.publish(run_id, line)
 
     def _command(self, row, run_dir: Path) -> tuple[list[str], dict[str, str]]:
         cfg = self.config
