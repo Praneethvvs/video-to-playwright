@@ -73,6 +73,24 @@ runner, its directory layout, how it names tests, whether page objects already e
 opinions. Whoever maintains that repo will maintain these tests, and a suite that looks foreign gets
 rewritten or abandoned.
 
+**If the test repo is empty, say where things will go before writing them**, and use this layout
+unless the person asks for another. Inventing a different shape each run is how two suites in one
+organisation end up with nothing in common:
+
+```
+e2e/
+  tests/          test_<feature>.py      one file per flow in the recording
+  pages/          page objects           one class per screen
+  helpers/        framework quirks       grids, toasts, dialogs
+  conftest.py     fixtures               from assets/conftest.template.py
+  .artifacts/     traces and screenshots gitignored
+specs/            the plain-language spec from step 5
+project-map.json  the structural baseline from step 1c
+```
+
+State the target directory in your first message back, so nobody discovers where the tests went by
+running `git status`.
+
 ### 1c. Check the project map
 
 **Always do this before writing or changing a test.** An application drifts, and drift found up front
