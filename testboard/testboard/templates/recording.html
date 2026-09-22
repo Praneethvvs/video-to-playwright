@@ -5,12 +5,15 @@
 <div class="pagehead">
   <div>
     <h1>{{ source['title'] }}</h1>
-    <p>Uploaded {{ source['created_at'] | when }}{% if source['created_by'] %} by {{ source['created_by'] }}{% endif %}</p>
+    <p>Uploaded {{ source['created_at'] | when }}{% if source['created_by'] %} by {{ source['created_by'] }}{% endif %}
+      {%- if view.approved %} · {{ view.approved | length }} test{{ '' if view.approved|length == 1 else 's' }} in the suite{% endif %}
+      {%- if view.pending %} · <strong>{{ view.pending | length }} awaiting approval</strong>{% endif %}</p>
   </div>
   <div class="aside">
     {% if source['transcript_text'] and agent.ok %}
     <form method="post" action="/recordings/{{ source['id'] }}/generate" class="inline">
-      <button><svg><use href="#i-play"/></svg> Generate tests</button>
+      <button><svg><use href="#i-play"/></svg>
+        {% if view.tests %}Convert again{% else %}Convert to tests{% endif %}</button>
     </form>
     {% endif %}
     <form method="post" action="/recordings/{{ source['id'] }}/delete" class="inline">
@@ -27,7 +30,7 @@
   <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
   <div>
     <strong>No transcript.</strong> The video shows what someone did; only the narration says what
-    was supposed to happen, and that is what becomes an assertion. Generation stays disabled until
+    was supposed to happen, and that is what becomes an assertion. Converting stays disabled until
     a transcript is attached — upload the <code>.vtt</code> below.
   </div>
 </div>
@@ -37,8 +40,8 @@
   <div>
     <strong>No usable timestamps.</strong> Typical of a Teams <code>.docx</code> export, which
     collapses the session into one block. The <code>.vtt</code> of the same meeting has per-cue
-    times, which is the difference between narration that can be aligned to the video and
-    narration that has to be matched by content.
+    times — the difference between narration that can be aligned to the video and narration that
+    has to be matched by content.
   </div>
 </div>
 {% endif %}
@@ -46,7 +49,97 @@
 {% if not agent.ok %}
 <div class="banner is-info">
   <span class="badge sm blue"><svg><use href="#i-alert"/></svg></span>
-  <div><strong>Generation is unavailable.</strong> {{ agent.detail }}</div>
+  <div><strong>Converting is unavailable.</strong> {{ agent.detail }}</div>
+</div>
+{% endif %}
+
+{# ── what came out of it ────────────────────────────────────────────────────────────── #}
+{% if view.tests %}
+<h2>Tests from this recording</h2>
+<div class="card flush">
+  <div class="rows">
+  {% for t in view.tests %}
+    <div class="row">
+      <span class="badge sm {% if t['state'] == 'approved' %}mint{% elif t['state'] == 'rejected' %}{% else %}peach{% endif %}">
+        <svg><use href="#i-{{ 'check' if t['state'] == 'approved' else 'alert' }}"/></svg>
+      </span>
+      <div class="row-main">
+        {% set stem, bracket, param = t['name'].partition('[') %}
+        <div class="row-name mono">{{ stem }}{% if bracket %}<span class="muted">[{{ param }}</span>{% endif %}</div>
+        <div class="row-sub">
+          <span class="mono">{{ t['file'] }}</span>
+          {% if t['state'] == 'approved' and t['decided_by'] %}
+            · <span class="chip is-good">approved by {{ t['decided_by'] }}</span>
+            {{ t['decided_at'] | when }}
+          {% elif t['state'] == 'rejected' %}
+            · <span class="chip">rejected{% if t['decided_by'] %} by {{ t['decided_by'] }}{% endif %}</span>
+          {% else %}
+            · <span class="chip is-warn">awaiting approval</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="row-actions" style="width:210px">
+        {% if t['state'] != 'approved' %}
+        <form method="post" action="/tests/decide" class="inline">
+          <input type="hidden" name="nodeid" value="{{ t['nodeid'] }}">
+          <input type="hidden" name="state" value="rejected">
+          <button class="ghost sm">Reject</button>
+        </form>
+        <form method="post" action="/tests/decide" class="inline">
+          <input type="hidden" name="nodeid" value="{{ t['nodeid'] }}">
+          <input type="hidden" name="state" value="approved">
+          <button class="sm"><svg><use href="#i-check"/></svg> Approve</button>
+        </form>
+        {% else %}
+        <a class="btn ghost sm" href="/tests">In the suite</a>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{# ── what the agent said, including anything it could not settle ────────────────────── #}
+{% if view.last_run and view.last_run['message'] %}
+{% set failed = view.last_run['status'] != 'passed' %}
+{# A failed run's message is an error, not a report. Printing a stack trace under "what the agent
+   reported" invites someone to read it as findings. #}
+<h2>{% if failed %}The last conversion did not finish{% else %}What the agent reported{% endif %}</h2>
+<div class="card">
+  {% if failed %}
+  <div class="row" style="padding:0 0 12px">
+    <span class="badge sm rose"><svg><use href="#i-alert"/></svg></span>
+    <div class="row-main">
+      <div class="row-name">Run #{{ view.last_run['id'] }} ended as {{ view.last_run['status'] }}</div>
+      <div class="row-sub">{{ view.last_run['finished_at'] | when }} · anything it had already
+        written is still in the working tree, and shows above if it collected</div>
+    </div>
+  </div>
+  {% endif %}
+  <div class="agent-report">{{ view.last_run['message'] }}</div>
+  {% if not failed %}
+  <p class="muted small" style="margin-top:14px; margin-bottom:0">
+    From <a class="linky" href="/runs/{{ view.last_run['id'] }}">run #{{ view.last_run['id'] }}</a>,
+    {{ view.last_run['finished_at'] | when }}.
+  </p>
+  {% endif %}
+</div>
+
+<div class="banner is-info">
+  <span class="badge sm lilac"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>If it left questions open, answer them where you work, not here.</strong>
+    A recording is often ambiguous — it shows a click but not why, or an outcome the narrator
+    never named. This dashboard deliberately does not try to hold that conversation: it has no
+    way to verify an answer against the application, and a half-remembered reply typed into a box
+    becomes an assertion nobody can trace. Continue in your own Codex session, open a pull
+    request, and the merged tests appear here as pending for someone to approve.
+    <pre class="copyable">cd {{ repo_name }}
+codex
+# then: read video-to-playwright/SKILL.md and continue from run #{{ view.last_run['id'] }}.
+#       The transcript is in .testboard/testboard.db, sources table, id {{ source['id'] }}.</pre>
+  </div>
 </div>
 {% endif %}
 
@@ -60,9 +153,7 @@
       {% if source['transcript_name'] %}{{ source['transcript_name'] }}<br>
         <span class="muted">{{ cue_total }} cue(s)</span>
       {% else %}<span class="muted">none</span>{% endif %}</span></div>
-    {% if source['video_duration'] %}
-    <div><span class="k">length</span><span class="v">{{ (source['video_duration'] / 60) | round(1) }} min</span></div>
-    {% endif %}
+    <div><span class="k">uploaded</span><span class="v small">{{ source['created_at'] | when }}</span></div>
     <div><span class="k">digest</span><span class="v mono tiny">{{ (source['video_sha256'] or '—')[:16] }}</span></div>
   </div>
 </div>
@@ -89,6 +180,30 @@
   </div>
 </form>
 
+{% if view.runs %}
+<h2>Conversion runs</h2>
+<div class="card flush">
+  <div class="rows">
+  {% for r in view.runs %}
+    <div class="row">
+      <span class="badge sm {% if r['status'] == 'passed' %}mint{% elif r['status'] in ('running','queued') %}blue{% else %}rose{% endif %}">
+        <svg><use href="#i-{{ 'check' if r['status'] == 'passed' else 'play' }}"/></svg>
+      </span>
+      <div class="row-main">
+        <div class="row-name"><a class="linky" style="text-decoration:none;color:inherit" href="/runs/{{ r['id'] }}">Run #{{ r['id'] }}</a></div>
+        <div class="row-sub">{{ r['requested_at'] | when }}{% if r['requested_by'] %} · {{ r['requested_by'] }}{% endif %}
+          {%- if r['git_sha'] %} · <span class="mono">{{ r['git_sha'] }}</span>{% endif %}</div>
+      </div>
+      <div class="row-slot w-status"><span class="dot {{ r['status'] }}">{{ r['status'] }}</span></div>
+      <div class="row-actions" style="width:60px">
+        <a class="btn icon" href="/runs/{{ r['id'] }}" title="Open"><svg><use href="#i-file"/></svg></a>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% if cues %}
 <h2>Transcript</h2>
 <div class="card flush">
@@ -99,7 +214,9 @@
         <span class="mono tiny muted">{{ c['start'] or '' }}</span>
       </div>
       <div class="row-main">
-        {% if c['speaker'] %}<div class="row-sub"><strong>{{ c['speaker'] }}</strong></div>{% endif %}
+        {% if c['speaker'] and (loop.first or c['speaker'] != cues[loop.index0 - 1]['speaker']) %}
+          <div class="row-sub"><strong>{{ c['speaker'] }}</strong></div>
+        {% endif %}
         <div style="font-size:13px; white-space:normal">{{ c['text'] }}</div>
       </div>
     </div>
@@ -112,39 +229,5 @@
   {% endif %}
 </div>
 {% endif %}
-
-{% if runs %}
-<h2>Generation runs</h2>
-<div class="card flush">
-  <div class="rows">
-  {% for r in runs %}
-    <div class="row">
-      <span class="badge sm {% if r['status'] == 'passed' %}mint{% elif r['status'] in ('running','queued') %}blue{% else %}rose{% endif %}">
-        <svg><use href="#i-{{ 'check' if r['status'] == 'passed' else 'play' }}"/></svg>
-      </span>
-      <div class="row-main">
-        <div class="row-name"><a class="linky" style="text-decoration:none;color:inherit" href="/runs/{{ r['id'] }}">Run #{{ r['id'] }}</a></div>
-        <div class="row-sub">{{ r['requested_at'] | when }}{% if r['requested_by'] %} · {{ r['requested_by'] }}{% endif %}</div>
-      </div>
-      <div class="row-slot w-status"><span class="dot {{ r['status'] }}">{{ r['status'] }}</span></div>
-      <div class="row-actions">
-        <a class="btn icon" href="/runs/{{ r['id'] }}" title="Open"><svg><use href="#i-file"/></svg></a>
-      </div>
-    </div>
-  {% endfor %}
-  </div>
-</div>
-{% endif %}
-
-<div class="banner is-info" style="margin-top:22px">
-  <span class="badge sm lilac"><svg><use href="#i-alert"/></svg></span>
-  <div>
-    <strong>What generation will and will not do.</strong> It verifies every locator against
-    {{ base_url or base_url_env }} before committing it, and it leaves a hole open rather than
-    inventing an expected value the narrator never gave. What comes out still needs reading: the
-    one thing to check is that every assertion traces back to something the tester actually said
-    mattered.
-  </div>
-</div>
 
 {% endblock %}

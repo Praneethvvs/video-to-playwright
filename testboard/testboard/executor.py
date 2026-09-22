@@ -21,7 +21,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import preflight, procs, results
+from . import gitinfo, preflight, procs, results
 from .config import Config
 from .db import Database, utcnow
 from .streaming import LogBus
@@ -237,10 +237,19 @@ class Executor:
             self._current_run_id = None
             return
 
+        # The exact command, at the top of the log and in the file — the pump appends rather than
+        # truncating so this survives a reload. Without it, "why did that run pick those tests"
+        # is guesswork, and a selection bug stays invisible until somebody counts the results.
+        header = "$ " + " ".join(a if " " not in a else f'"{a}"' for a in argv)
+        log_path.write_text(header + "\n\n", encoding="utf-8", newline="\n")
+        self.bus.publish(run_id, header)
+        self.bus.publish(run_id, "")
+
         self._proc = proc
         # Persisted before the first line is read, so a crash in this window still reconciles.
         self.db.update_run(run_id, status="running", started_at=utcnow(), pid=proc.pid,
-                           pid_created_at=procs.process_created_at(proc.pid))
+                           pid_created_at=procs.process_created_at(proc.pid),
+                           **gitinfo.describe(self.config.repo_root).as_fields())
 
         pump = asyncio.create_task(self._pump(run_id, proc, log_path))
         timed_out = False
@@ -293,7 +302,8 @@ class Executor:
 
         self.bus.open(run_id, log_path)
         self._current_run_id = run_id
-        self.db.update_run(run_id, status="running", started_at=utcnow())
+        self.db.update_run(run_id, status="running", started_at=utcnow(),
+                           **gitinfo.describe(cfg.repo_root).as_fields())
 
         handle = log_path.open("w", encoding="utf-8", errors="replace", newline="\n")
 
@@ -353,9 +363,19 @@ class Executor:
         self.db.update_run(run_id, **fields)
 
         # The agent has written into the working tree. Whatever it added is only real once the
-        # tests are collected again, so refresh rather than leaving a stale list on screen.
+        # tests are collected again, so refresh rather than leaving a stale list on screen — and
+        # anything new is attributed to this recording, so the Recordings page can say how many
+        # tests came out of it and who has signed them off.
         from . import inventory
-        await inventory.refresh(self.config, self.db)
+        collected = await inventory.refresh(self.config, self.db, origin="generated",
+                                            source_id=source_id)
+        if collected.new_nodeids:
+            self.db.update_source(source_id, last_generation_run=run_id)
+            self.bus.publish(run_id, "")
+            self.bus.publish(run_id, f"{len(collected.new_nodeids)} new test(s) collected, "
+                                     f"awaiting approval:")
+            for nodeid in collected.new_nodeids:
+                self.bus.publish(run_id, f"  {nodeid}")
 
     def _command(self, row, run_dir: Path) -> tuple[list[str], dict[str, str]]:
         cfg = self.config
@@ -379,6 +399,18 @@ class Executor:
             ]
             if not target:
                 argv += list(cfg.runner.test_paths)
+
+            # Anything broader than one named test runs what has been approved and nothing else.
+            # Asking "is the target empty" is not enough: "run all" arrives here already narrowed
+            # to `-m not writes`, so that check silently never fired and a pending test rode
+            # along in a sweep that claimed to be the suite.
+            #
+            # Deselecting the unapproved keeps the command line short — there are usually a few
+            # pending and many approved — and leaves the selection legible in the log.
+            unapproved = [t["nodeid"] for t in self.db.inventory() if t["state"] != "approved"]
+            if target not in unapproved:
+                for nodeid in unapproved:
+                    argv += ["--deselect", nodeid]
             env["TESTBOARD_REPORT_OUT"] = str(run_dir / "reports.jsonl")
             plugin_dir = cfg.state_dir / "plugins"
             existing = env.get("PYTHONPATH")
@@ -422,7 +454,8 @@ class Executor:
         Bytes, decoded explicitly. `text=True` decodes with locale.getpreferredencoding(), which is
         cp1252 on a default Windows install, and that has already produced mojibake in this project.
         """
-        with log_path.open("w", encoding="utf-8", errors="replace", newline="\n") as fh:
+        # Append: the command line was written here before the process started.
+        with log_path.open("a", encoding="utf-8", errors="replace", newline="\n") as fh:
             while True:
                 raw = await proc.stdout.readline()
                 if not raw:

@@ -5,8 +5,8 @@
 <div class="pagehead">
   <div>
     <h1>Recordings</h1>
-    <p>A tester's screen capture and what they said while making it. The narration is the part that
-       becomes assertions.</p>
+    <p>A tester's screen capture and what they said while making it. The narration is the part
+       that becomes assertions.</p>
   </div>
 </div>
 
@@ -20,8 +20,8 @@
 {% if not agent.ok %}
 <div class="banner is-warn">
   <span class="badge sm peach"><svg><use href="#i-alert"/></svg></span>
-  <div><strong>Generation is unavailable.</strong> {{ agent.detail }}
-    <br>Uploads still work — this only affects turning one into tests.</div>
+  <div><strong>Converting to tests is unavailable.</strong> {{ agent.detail }}
+    <br>Uploading still works — this only affects the Convert button.</div>
 </div>
 {% endif %}
 
@@ -45,13 +45,13 @@
 
 {% if discovered %}
 <h2>Already in the repository</h2>
-<p class="muted small">Found next to the code and not registered here yet.</p>
+<p class="muted small" style="margin-top:-6px">Sitting next to the code and not registered here yet.</p>
 <div class="card flush">
   <div class="rows">
   {% for path in discovered %}
     <div class="row">
       <span class="badge sm"><svg><use href="#i-file"/></svg></span>
-      <div class="row-main"><div class="row-name mono">{{ path.relative_to(path.anchor) if path.is_absolute() else path }}</div></div>
+      <div class="row-main"><div class="row-name mono">{{ path.name }}</div></div>
       <div class="row-actions">
         <form method="post" action="/recordings/import" class="inline">
           <input type="hidden" name="path" value="{{ path.name }}">
@@ -67,44 +67,73 @@
 <h2>Uploaded</h2>
 <div class="card flush">
   <div class="rows">
-  {% for s in sources %}
+  {% for v in views %}
+  {% set s = v.row %}
     <div class="row">
-      <span class="badge sm {% if s['transcript_text'] and s['video_path'] %}mint{% elif s['transcript_text'] %}blue{% else %}peach{% endif %}">
-        <svg><use href="#i-{{ 'check' if s['transcript_text'] and s['video_path'] else 'file' }}"/></svg>
+      <span class="badge sm {% if v.pending %}peach{% elif v.approved %}mint{% elif s['transcript_text'] %}blue{% else %}rose{% endif %}">
+        <svg><use href="#i-{{ 'check' if v.approved and not v.pending else ('alert' if v.pending or not s['transcript_text'] else 'film') }}"/></svg>
       </span>
+
       <div class="row-main">
         <div class="row-name">
           <a class="linky" style="text-decoration:none;color:inherit" href="/recordings/{{ s['id'] }}">{{ s['title'] }}</a>
         </div>
         <div class="row-sub">
-          {% if s['video_name'] %}{{ s['video_name'] }} ({{ (s['video_bytes'] / 1048576) | round(1) }} MB){% else %}<span class="muted">no video</span>{% endif %}
+          uploaded {{ s['created_at'] | when }}{% if s['created_by'] %} by {{ s['created_by'] }}{% endif %}
           ·
-          {% if s['transcript_name'] %}{{ s['transcript_name'] }}{% if not s['has_timestamps'] %}
+          {% if s['video_name'] %}{{ (s['video_bytes'] / 1048576) | round(1) }} MB video{% else %}<span class="muted">no video</span>{% endif %}
+          ·
+          {% if s['transcript_name'] %}transcript{% if not s['has_timestamps'] %}
             <span class="chip is-warn">no timestamps</span>{% endif %}
-          {% else %}<span class="chip is-warn">no transcript</span>{% endif %}
-          · {{ s['created_at'] | when }}
+          {% else %}<span class="chip is-bad">no transcript</span>{% endif %}
         </div>
       </div>
-      <div class="row-slot w-status">
-        {% set r = runs.get(s['id']) %}
-        {% if r %}<span class="dot {{ r[0]['status'] }}">{{ r[0]['status'] }}</span>
-        {% else %}<span class="dot unknown">not generated</span>{% endif %}
+
+      {# The column that answers "has this been turned into tests yet". Both numbers, when both
+         exist: "1 awaiting approval" alone hides the work already accepted from the same
+         recording, and reads as though nothing came of it. #}
+      <div class="row-slot" style="width:230px">
+        <div class="stack">
+          {% if v.last_run and v.last_run['status'] in ('running', 'queued') %}
+            <span class="dot running">converting now</span>
+          {% endif %}
+          {% if v.approved %}
+            <span class="dot passed">{{ v.approved | length }} in the suite</span>
+          {% endif %}
+          {% if v.pending %}
+            <span class="dot cancelled">{{ v.pending | length }} awaiting approval</span>
+          {% endif %}
+          {% if v.rejected %}
+            <span class="dot unknown">{{ v.rejected | length }} rejected</span>
+          {% endif %}
+          {% if not v.tests and not (v.last_run and v.last_run['status'] in ('running', 'queued')) %}
+            {% if v.last_run and v.last_run['status'] != 'passed' %}
+              <span class="dot failed">conversion {{ v.last_run['status'] }}</span>
+            {% else %}
+              <span class="dot unknown">not converted</span>
+            {% endif %}
+          {% endif %}
+        </div>
       </div>
-      <div class="row-actions">
+
+      <div class="row-actions" style="width:200px">
         <a class="btn icon" href="/recordings/{{ s['id'] }}" title="Open"><svg><use href="#i-file"/></svg></a>
-        {% if s['transcript_text'] and agent.ok %}
-        <form method="post" action="/recordings/{{ s['id'] }}/generate" class="inline">
-          <button class="quiet sm"><svg><use href="#i-play"/></svg> Generate tests</button>
-        </form>
+        {% if v.pending %}
+          <a class="btn sm" href="/tests#pending"><svg><use href="#i-check"/></svg> Review {{ v.pending | length }}</a>
+        {% elif s['transcript_text'] and agent.ok %}
+          <form method="post" action="/recordings/{{ s['id'] }}/generate" class="inline">
+            <button class="quiet sm"><svg><use href="#i-play"/></svg>
+              {% if v.tests %}Convert again{% else %}Convert to tests{% endif %}</button>
+          </form>
         {% endif %}
       </div>
     </div>
   {% endfor %}
   </div>
 
-  {% if not sources %}
+  {% if not views %}
   <div class="empty">
-    <span class="badge lilac"><svg><use href="#i-file"/></svg></span>
+    <span class="badge lilac"><svg><use href="#i-film"/></svg></span>
     <div><strong>Nothing uploaded yet.</strong></div>
     <div class="small">Drop a recording and its transcript above.</div>
   </div>
