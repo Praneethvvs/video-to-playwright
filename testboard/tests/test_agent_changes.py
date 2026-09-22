@@ -267,3 +267,45 @@ def test_the_status_api_needs_the_token_too(tmp_path):
     (tmp_path / "tests").mkdir()
     guarded = TestClient(create_app(load(tmp_path), auth.Policy("token", "s" * 32, "0.0.0.0")))
     assert guarded.get("/api/runs/1").status_code == 401
+
+
+# --- a refused run still knows what it was refused against ------------------------------------
+def test_a_preflight_refusal_records_the_commit(tmp_path, monkeypatch):
+    """Nothing ran, but the commit is still knowable and still worth recording.
+
+    Leaving it blank made the run page say "this run predates commit capture, or the repository
+    is not under git" — untrue, and a page explaining a refusal is a bad place to be wrong about
+    something checkable.
+    """
+    import asyncio as aio
+
+    from testboard import executor as exmod, preflight
+    from testboard.config import load
+    from testboard.db import Database
+    from testboard.streaming import LogBus
+
+    (tmp_path / "testboard.yaml").write_text(RENDER_CONFIG, encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "config", "user.email", "t@example.com")
+    git(tmp_path, "config", "user.name", "t")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "base")
+
+    config = load(tmp_path)
+    db = Database(config.db_path)
+    ex = exmod.Executor(config, db, LogBus())
+
+    async def refuse(_config):
+        return preflight.Check(ok=False, reason="environment_unreachable",
+                               detail="could not reach it. Is the VPN connected?")
+
+    monkeypatch.setattr(preflight, "before_run", refuse)
+    run_id = db.enqueue(kind="pytest", target="", label="refused", destructive=False,
+                        timeout_seconds=60, requested_by="local")
+    aio.run(ex._execute(db.get_run(run_id)))
+
+    row = db.get_run(run_id)
+    assert row["error_reason"] == "environment_unreachable"
+    assert row["git_sha"], "a refused run left the commit blank and the page then lied about why"
+    db.close()

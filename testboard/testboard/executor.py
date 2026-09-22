@@ -372,8 +372,14 @@ class Executor:
             # Decided here, by a check testboard performed, rather than inferred from a traceback
             # afterwards. The VPN being down must not look like a failing test.
             log_path.write_text(check.detail + "\n", encoding="utf-8")
+            # The commit is recorded even though nothing ran. Leaving it blank made the run page
+            # say "this run predates commit capture, or the repository is not under git", which
+            # is simply untrue — and a page that explains a refusal is a bad place to be wrong
+            # about something checkable.
+            commit = await asyncio.to_thread(gitinfo.describe, self.config.repo_root)
             self.db.update_run(run_id, status="error", error_reason=check.reason,
-                               started_at=utcnow(), finished_at=utcnow(), message=check.detail)
+                               started_at=utcnow(), finished_at=utcnow(), message=check.detail,
+                               **commit.as_fields())
             return
 
         argv, env = self._command(row, run_dir)

@@ -98,8 +98,11 @@
     </span></div>
     {% if run['git_branch'] %}<div><span class="k">branch</span><span class="v mono small">{{ run['git_branch'] }}</span></div>{% endif %}
     {% else %}
-    <div><span class="k">commit</span><span class="v muted small">not recorded — this run predates
-      commit capture, or the repository is not under git</span></div>
+    {# Three reasons the commit can be missing, and the page should not assert one of them as
+       though it knew. It does not. #}
+    <div><span class="k">commit</span><span class="v muted small">not recorded — this run
+      predates commit capture, the repository is not under git, or git could not be
+      read</span></div>
     {% endif %}
   </div>
 </div>
