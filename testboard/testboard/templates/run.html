@@ -85,6 +85,18 @@
     {% if run['finished_at'] %}<div><span class="k">finished</span><span class="v">{{ run['finished_at'] | when }}</span></div>{% endif %}
     {% if run['exit_code'] is not none %}<div><span class="k">exit code</span><span class="v">{{ run['exit_code'] }}</span></div>{% endif %}
     <div><span class="k">timeout</span><span class="v">{{ run['timeout_seconds'] }}s</span></div>
+    {% if run['git_sha'] %}
+    <div><span class="k">commit</span><span class="v">
+      <span class="mono">{{ run['git_sha'] }}</span>
+      {% if run['git_dirty'] %}<span class="chip is-warn" title="The working tree had uncommitted changes, so this result is not reproducible from the commit alone">uncommitted changes</span>{% endif %}
+      {% if run['git_subject'] %}<br><span class="muted small">{{ run['git_subject'] }}</span>{% endif %}
+      {% if run['git_author'] %}<br><span class="muted small">{{ run['git_author'] }}</span>{% endif %}
+    </span></div>
+    {% if run['git_branch'] %}<div><span class="k">branch</span><span class="v mono small">{{ run['git_branch'] }}</span></div>{% endif %}
+    {% else %}
+    <div><span class="k">commit</span><span class="v muted small">not recorded — this run predates
+      commit capture, or the repository is not under git</span></div>
+    {% endif %}
   </div>
 </div>
 
