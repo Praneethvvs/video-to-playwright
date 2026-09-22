@@ -19,7 +19,7 @@ from pathlib import Path
 
 import uvicorn
 
-from . import __version__
+from . import __version__, auth
 from .app import create_app
 from .config import ConfigError, load
 
@@ -55,19 +55,23 @@ def main() -> int:
 
     _logging(config.state_dir)
 
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        logging.getLogger("testboard").warning(
-            "listening on %s. This process can start runs that mutate %s — make sure something "
-            "in front of it authenticates callers.",
-            args.host, config.environment.base_url() or "the target environment",
-        )
+    # Decided before binding, and fatal if it cannot be made safe. A warning here would be a
+    # warning printed into a log nobody reads, in front of an unauthenticated endpoint that can
+    # mutate a shared environment.
+    try:
+        policy = auth.policy_for(args.host)
+    except auth.AuthError as exc:
+        print(f"testboard: {exc}", file=sys.stderr)
+        return 2
 
     print(f"testboard {__version__} — {config.repo_name}")
     print(f"  repo        {config.repo_root}")
     print(f"  interpreter {config.repo_python()}")
     print(f"  serving     http://{args.host}:{args.port}")
+    print(f"  access      {policy.describe()}")
 
-    uvicorn.run(create_app(config), host=args.host, port=args.port, workers=1, log_level="warning")
+    uvicorn.run(create_app(config, policy), host=args.host, port=args.port, workers=1,
+                log_level="warning")
     return 0
 
 

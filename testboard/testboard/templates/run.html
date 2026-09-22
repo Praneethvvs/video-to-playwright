@@ -30,10 +30,14 @@
         <span class="chip is-warn">no longer in the repository</span>
       {% endif %}
     {% endif %}
+    {# An imported run has no artifacts to pin and no log to download. Offering both would be two
+       buttons that do nothing, which is worse than two buttons that are absent. #}
+    {% if run['kind'] != 'ci' %}
     <form method="post" action="/runs/{{ run['id'] }}/pin" class="inline">
       <button class="icon" title="{% if run['pinned'] %}Unpin artifacts{% else %}Pin artifacts so the sweep keeps them{% endif %}"><svg><use href="#i-pin"/></svg></button>
     </form>
     <a class="btn icon" href="/runs/{{ run['id'] }}/log" title="Raw log"><svg><use href="#i-dl"/></svg></a>
+    {% endif %}
   </div>
 </div>
 
@@ -84,7 +88,7 @@
     {% if run['started_at'] %}<div><span class="k">started</span><span class="v">{{ run['started_at'] | when }}</span></div>{% endif %}
     {% if run['finished_at'] %}<div><span class="k">finished</span><span class="v">{{ run['finished_at'] | when }}</span></div>{% endif %}
     {% if run['exit_code'] is not none %}<div><span class="k">exit code</span><span class="v">{{ run['exit_code'] }}</span></div>{% endif %}
-    <div><span class="k">timeout</span><span class="v">{{ run['timeout_seconds'] }}s</span></div>
+{% if run['kind'] != 'ci' %}<div><span class="k">timeout</span><span class="v">{{ run['timeout_seconds'] }}s</span></div>{% endif %}
     {% if run['git_sha'] %}
     <div><span class="k">commit</span><span class="v">
       <span class="mono">{{ run['git_sha'] }}</span>
@@ -149,7 +153,20 @@
 <p class="muted small">Artifacts for this run were pruned to keep the disk in budget. The log is kept.</p>
 {% endif %}
 
+{% if run['kind'] == 'ci' %}
+{# An imported run has no log here, and an empty black panel saying "waiting for output" would
+   suggest one is coming. #}
+<div class="banner is-info">
+  <span class="badge sm lilac"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>This run happened elsewhere.</strong> Its results were imported from a JUnit report,
+    so there is no log, no trace and no process here — those live wherever it actually ran.
+    Importing records results and never approves a test: a pipeline is not a person.
+  </div>
+</div>
+{% else %}
 <h2>Output</h2>
 <pre id="log" class="log" data-run="{{ run['id'] }}" data-live="{{ 'yes' if live else 'no' }}"></pre>
+{% endif %}
 
 {% endblock %}

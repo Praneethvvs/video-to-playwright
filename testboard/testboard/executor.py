@@ -110,6 +110,19 @@ class Executor:
                                    finished_at=utcnow(),
                                    message="still queued when testboard restarted")
                 continue
+            if row["kind"] == KIND_GENERATE:
+                # A generation run has no subprocess, so "its process was already gone" is both
+                # true and useless. What matters is that an agent was editing the working tree
+                # when this stopped, and whatever it had written is still there, half-finished.
+                self.db.update_run(
+                    row["id"], status="crashed", error_reason="crashed", finished_at=utcnow(),
+                    message=("testboard restarted while the agent was working. Anything it had "
+                             "already written is still in the working tree and may be "
+                             "incomplete — check `git status` before running or approving "
+                             "anything from this recording."),
+                )
+                continue
+
             still_ours = procs.pid_is_same_process(row["pid"], row["pid_created_at"])
             if still_ours:
                 # Killed below, once there is an event loop to do it on.
