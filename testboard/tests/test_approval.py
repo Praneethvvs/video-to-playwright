@@ -54,10 +54,28 @@ def test_an_empty_repo_then_generation_does_not_approve(db):
     assert {r["source_id"] for r in db.inventory()} == {7}
 
 
-def test_generation_can_never_establish_the_baseline(db):
+def test_generation_can_never_approve_what_it_found(db):
     db.replace_inventory(GENERATED, origin="generated", source_id=3)
-    assert not db.get_meta("baseline_established")
     assert set(states(db).values()) == {"pending"}
+
+
+def test_a_later_collection_cannot_approve_the_agents_work(db):
+    """The hole left by the first version of this fix.
+
+    A generation pass was barred from establishing the baseline, so after one the baseline was
+    still "not taken" — and the next ordinary collection concluded it was the first, approving
+    everything it found including the tests the agent had just written.
+    """
+    db.replace_inventory(GENERATED, origin="generated", source_id=3)
+    db.replace_inventory(GENERATED, origin="merged")
+    assert set(states(db).values()) == {"pending"}, "an ordinary collection approved agent output"
+
+
+def test_a_generation_pass_records_that_the_repository_has_been_seen(db):
+    db.replace_inventory(GENERATED, origin="generated", source_id=3)
+    assert db.get_meta("baseline_established"), (
+        "the marker answers 'have we seen this repo', which a generation pass does"
+    )
 
 
 def test_an_empty_collection_does_not_establish_the_baseline(db):

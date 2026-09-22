@@ -104,6 +104,63 @@
   </div>
 </div>
 
+{% if changes %}
+{# What the agent did to the tree. The approval gate only ever saw tests being *added*, so an
+   agent that rewrote or deleted an existing test narrowed the suite with nothing on any screen
+   saying so. Removals are shown first and loudest, because they are the ones that cost coverage
+   and the ones nobody goes looking for. #}
+{% if changes['removed_nodeids'] %}
+<div class="banner is-bad">
+  <span class="badge sm rose"><svg><use href="#i-alert"/></svg></span>
+  <div>
+    <strong>{{ changes['removed_nodeids'] | length }} test{{ '' if changes['removed_nodeids'] | length == 1 else 's' }} no longer exist{{ 's' if changes['removed_nodeids'] | length == 1 else '' }} after this run.</strong>
+    Generation is allowed to delete a test — sometimes it should. Read the diff before merging.
+  </div>
+</div>
+{% endif %}
+
+<h2>What this run changed</h2>
+<div class="card flush">
+  <div class="rows">
+  {% for nodeid in changes['removed_nodeids'] %}
+    <div class="row">
+      <span class="badge sm rose"><svg><use href="#i-alert"/></svg></span>
+      <div class="row-main">
+        <div class="row-name mono">{{ nodeid.split('::')[-1] }}</div>
+        <div class="row-sub mono">{{ nodeid.rsplit('::', 1)[0] }}</div>
+      </div>
+      <div class="row-slot w-status"><span class="chip is-bad">removed</span></div>
+    </div>
+  {% endfor %}
+  {% for f in changes['files'] %}
+    <div class="row">
+      <span class="badge sm {{ 'mint' if f['status'] == 'untracked' else ('rose' if f['status'] == 'deleted' else 'peach') }}"><svg><use href="#i-file"/></svg></span>
+      <div class="row-main">
+        <div class="row-name mono">{{ f['path'] }}</div>
+      </div>
+      <div class="row-slot w-status"><span class="chip {{ 'is-good' if f['status'] == 'untracked' else ('is-bad' if f['status'] == 'deleted' else 'is-warn') }}">{{ 'new file' if f['status'] == 'untracked' else f['status'] }}</span></div>
+    </div>
+  {% endfor %}
+  {% if not changes['removed_nodeids'] and not changes['files'] %}
+    {# "nothing changed" and "I could not tell" are different answers and must not read the same.
+       Saying the first while the caveat below says the second was a straight contradiction. #}
+    <div class="row"><div class="row-main"><div class="row-sub">
+      {% if changes['tree'] == 'known' %}Nothing in the working tree changed.
+      {% else %}The working tree was not readable, so nothing can be said about what changed.
+      {% endif %}
+    </div></div></div>
+  {% endif %}
+  </div>
+  {% if changes['tree'] == 'unknown' %}
+  <p class="muted small" style="padding:0 18px 14px">The working tree could not be read, so this
+    list is incomplete. It is not evidence that nothing else changed.</p>
+  {% elif changes['tree'] == 'no-baseline' %}
+  <p class="muted small" style="padding:0 18px 14px">There was no snapshot of the tree before the
+    run, so some of these changes may predate it.</p>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if results %}
 <h2>Per test</h2>
 <div class="card flush">

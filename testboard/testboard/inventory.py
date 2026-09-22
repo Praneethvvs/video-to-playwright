@@ -54,7 +54,13 @@ def _install_plugin(config: Config) -> Path:
     return target_dir
 
 
-async def collect(config: Config) -> CollectResult:
+async def collect(config: Config, on_spawn=None) -> CollectResult:
+    """Ask pytest what exists.
+
+    `on_spawn` hands the process to the caller. Collection is the only spawn outside the
+    executor's own command path, so without it the executor had no way to kill a collect that
+    somebody cancelled, and no PID recorded for the reconciler to find after a restart.
+    """
     python = config.repo_python()
     if not python.exists():
         return CollectResult(
@@ -79,6 +85,8 @@ async def collect(config: Config) -> CollectResult:
     ]
 
     proc = await spawn(argv, cwd=config.repo_root, env=env)
+    if on_spawn is not None:
+        on_spawn(proc)
     try:
         # Bounded. Collection imports every conftest in the repository, and one that blocks on
         # the network would otherwise hang this call — and with it the worker and the whole
@@ -116,14 +124,14 @@ async def collect(config: Config) -> CollectResult:
 
 
 async def refresh(config: Config, database, *, origin: str = "merged",
-                  source_id: int | None = None) -> CollectResult:
+                  source_id: int | None = None, on_spawn=None) -> CollectResult:
     """Collect and persist. The previous inventory is left intact if collection failed.
 
     `origin` labels anything that turns out to be new. The default is "merged", because outside a
     generation run the only way a test appears is that somebody landed it — which is exactly the
     case the approval step exists for.
     """
-    result = await collect(config)
+    result = await collect(config, on_spawn=on_spawn)
     if result.ok:
         result.new_nodeids = database.replace_inventory(
             result.items, origin=origin, source_id=source_id)

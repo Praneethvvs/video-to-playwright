@@ -48,6 +48,20 @@ class Totals:
         }
 
 
+def _int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def parse(path: Path) -> Totals | None:
     if not path.exists():
         return None
@@ -60,11 +74,15 @@ def parse(path: Path) -> Totals | None:
     suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
     totals = Totals()
     for suite in suites:
-        totals.tests += int(suite.get("tests", 0))
-        totals.failures += int(suite.get("failures", 0))
-        totals.errors += int(suite.get("errors", 0))
-        totals.skipped += int(suite.get("skipped", 0))
-        totals.duration += float(suite.get("time", 0) or 0)
+        # Tolerant of a malformed attribute. int("") and int("N/A") raise, and an uncaught
+        # ValueError made "one attribute is odd" indistinguishable from "this file is not a
+        # report at all" — so the caller reported a parse failure for something almost entirely
+        # readable.
+        totals.tests += _int(suite.get("tests"))
+        totals.failures += _int(suite.get("failures"))
+        totals.errors += _int(suite.get("errors"))
+        totals.skipped += _int(suite.get("skipped"))
+        totals.duration += _float(suite.get("time"))
 
         for case in suite.iter("testcase"):
             status, message = "passed", ""
@@ -77,7 +95,7 @@ def parse(path: Path) -> Totals | None:
             totals.cases.append({
                 "name": case.get("name", ""),
                 "classname": case.get("classname", ""),
-                "time": float(case.get("time", 0) or 0),
+                "time": _float(case.get("time")),
                 "status": status,
                 "message": message[:2000],
             })

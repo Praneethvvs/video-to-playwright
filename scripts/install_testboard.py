@@ -29,7 +29,17 @@ GITIGNORE_LINES = ["", "# testboard", ".testboard/"]
 
 
 def _log(message: str) -> None:
-    print(f"  {message}")
+    # Re-encoded for the console we are actually on. A default Windows console is cp1252, and an
+    # em dash printed into it comes out as a replacement character — which reads, to whoever is
+    # installing, like the installer itself is broken.
+    text = f"  {message}"
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        text = text.replace("—", "-").replace("→", "->").replace("’", "'")
+        text = text.encode(encoding, errors="replace").decode(encoding)
+    print(text)
 
 
 def venv_python(venv: Path) -> Path:

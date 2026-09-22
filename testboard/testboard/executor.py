@@ -81,7 +81,12 @@ class Executor:
 
         if self._agent is not None:
             try:
-                await self._agent.interrupt()
+                # Bounded. A stuck SDK call would otherwise hold shutdown open indefinitely, and
+                # a process that will not exit is a worse outcome than an agent that was not
+                # asked politely.
+                await asyncio.wait_for(self._agent.interrupt(), timeout=10)
+            except asyncio.TimeoutError:
+                log.warning("the agent did not acknowledge the interrupt within 10s")
             except Exception:                       # noqa: BLE001 - shutdown must not raise
                 log.exception("could not interrupt the agent during shutdown")
         if self._proc and self._proc.returncode is None:
@@ -93,7 +98,11 @@ class Executor:
         # Awaited, so their finally blocks run before the loop closes. Cancelling without
         # awaiting means the cleanup may simply not happen.
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=20)
+            except asyncio.TimeoutError:
+                log.warning("worker tasks did not finish within 20s of being cancelled")
 
     def reconcile(self) -> None:
         """Nothing can legitimately be `running` at startup; this process just began.
@@ -228,9 +237,14 @@ class Executor:
                 log.exception("run %s blew up in the executor", row["id"])
                 # Say what went wrong. "See its log" is useless advice when the failure happened
                 # before anything was written to that log, which is exactly when it happens.
+                # "while starting" only if it never got as far as running. Saying "failed
+                # while starting" about a run that completed and then tripped over its own
+                # bookkeeping sends whoever reads it looking in the wrong place.
+                started = (self.db.get_run(row["id"]) or {})["started_at"]
+                stage = "after starting" if started else "while starting"
                 self.db.update_run(
                     row["id"], status="error", error_reason="test_error", finished_at=utcnow(),
-                    message=f"testboard itself failed while starting this run: "
+                    message=f"testboard itself failed {stage} this run: "
                             f"{type(exc).__name__}: {exc}",
                 )
             finally:
@@ -248,10 +262,14 @@ class Executor:
         while not self._stopping.is_set():
             try:
                 await asyncio.sleep(3600)
-                retention.sweep(self.config, self.db)
+                # Both off the event loop. The retention sweep walks every artifact directory
+                # to size it and the browser sweep enumerates every process on the machine;
+                # doing either inline froze every SSE stream and HTTP request for its duration.
+                await asyncio.to_thread(retention.sweep, self.config, self.db)
                 # Both directories: a Playwright browser inherits pytest's working directory,
                 # which is the repository root, not the state directory.
-                procs.sweep_orphan_browsers(
+                await asyncio.to_thread(
+                    procs.sweep_orphan_browsers,
                     self.config.state_dir, self.config.repo_root,
                     run_in_progress=self._current_run_id is not None,
                 )
@@ -293,10 +311,19 @@ class Executor:
             # feature out earlier tonight; it is not getting a second outing.
             result = None
             message = "collection did not complete"
+
+            def took_process(proc):
+                # Recorded so Cancel has something to kill and the reconciler has a PID after a
+                # restart. Collection is the one spawn outside the command path below, and it
+                # previously had neither.
+                self._proc = proc
+                self.db.update_run(run_id, pid=proc.pid,
+                                   pid_created_at=procs.process_created_at(proc.pid))
+
             try:
                 self.bus.publish(run_id, "collecting tests with pytest --collect-only")
                 from . import inventory
-                result = await inventory.refresh(self.config, self.db)
+                result = await inventory.refresh(self.config, self.db, on_spawn=took_process)
                 lines = []
                 if result.ok:
                     lines.append(f"{len(result.items)} test(s) collected")
@@ -313,6 +340,15 @@ class Executor:
             finally:
                 self.bus.finish(run_id)
                 self._current_run_id = None
+                self._proc = None
+
+            # A cancelled collect reported "passed": the cancel killed the subprocess, and the
+            # empty output that came back was then read as a clean answer.
+            if self.db.get_run(run_id)["cancel_requested"]:
+                self.db.update_run(run_id, status="cancelled", error_reason="cancelled",
+                                   finished_at=utcnow(), message="cancelled")
+                return
+
             ok = bool(result and result.ok)
             self.db.update_run(
                 run_id, finished_at=utcnow(),
@@ -364,6 +400,10 @@ class Executor:
 
         self._proc = proc
         # Persisted before the first line is read, so a crash in this window still reconciles.
+        # The window matters: spawning and the git lookup both await, so a cancel can arrive
+        # after the process exists and before it is recorded. Without the re-check below, that
+        # cancel found nothing running to kill and the run executed to completion while the row
+        # said "cancelled".
         # to_thread: describe() shells out to git five times, and doing that on the event loop
         # stalls every SSE stream and HTTP request for its duration.
         commit = await asyncio.to_thread(gitinfo.describe, self.config.repo_root)
@@ -371,6 +411,9 @@ class Executor:
                            pid_created_at=await asyncio.to_thread(
                                procs.process_created_at, proc.pid),
                            **commit.as_fields())
+
+        if self.db.get_run(run_id)["cancel_requested"]:
+            await procs.kill_tree(proc)
 
         pump = asyncio.create_task(self._pump(run_id, proc, log_path))
         timed_out = False
@@ -431,6 +474,9 @@ class Executor:
         self.bus.open(run_id, log_path)
         self._current_run_id = run_id
         handle = None
+        # Bound before the try, read after the finally. The same unbound-local shape that took
+        # the whole generation feature out once already.
+        snapshot: tuple = (None, None)
 
         # Everything from bus.open() onward is inside this try, not just the agent call. Opening
         # a stream and then raising before reaching the guarded section leaves the SSE generator
@@ -456,6 +502,29 @@ class Executor:
                 test_dir=", ".join(cfg.runner.test_paths),
                 transcript_text=source["transcript_text"][:400_000],
             )
+
+            # Collect BEFORE the agent touches anything. Two reasons, both learned the hard way:
+            #
+            # The tests that exist right now are the repository's, whoever wrote them, and this
+            # is the only moment that is unambiguously true. Establishing the baseline here means
+            # the diff afterwards is genuinely the agent's work rather than "everything, because
+            # the database happened to be empty".
+            #
+            # Without it, a generation run on a repo with no prior collection left the baseline
+            # unestablished, and the *next* ordinary collection then approved everything it found
+            # — including the tests the agent had just written and nobody had read.
+            from . import inventory as inventory_module
+            self.bus.publish(run_id, "recording what exists before the agent starts")
+            before = await inventory_module.refresh(self.config, self.db, origin="merged")
+            # Also what the tree looked like, so the edits already sitting there are not later
+            # attributed to the agent. Somebody mid-change when they press Convert is normal.
+            dirty_before = await asyncio.to_thread(gitinfo.changed_paths, cfg.repo_root)
+            snapshot = (before, dirty_before)
+            if before.ok:
+                self.bus.publish(run_id, f"  {len(before.items)} test(s) already here")
+            else:
+                self.bus.publish(run_id, f"  could not collect first ({before.reason}); "
+                                         f"anything new will still need approval")
 
             self._agent = agentmod.CodexAgent(
                 repo_root=cfg.repo_root,
@@ -508,6 +577,18 @@ class Executor:
         from . import inventory
         collected = await inventory.refresh(self.config, self.db, origin="generated",
                                             source_id=source_id)
+
+        changes = await asyncio.to_thread(
+            self._describe_agent_changes, snapshot, collected, cfg.repo_root)
+        self.db.update_run(run_id, changes_json=json.dumps(changes))
+        lines = self._changes_as_lines(changes)
+        if lines:
+            with log_path.open("a", encoding="utf-8", errors="replace", newline="") as fh:
+                for line in lines:
+                    fh.write(line + chr(10))
+            for line in lines:
+                self.bus.publish(run_id, line)
+
         if collected.new_nodeids:
             self.db.update_source(source_id, last_generation_run=run_id)
             # Appended to the log as well as streamed. Publishing only to the bus meant the most
@@ -520,6 +601,78 @@ class Executor:
                     fh.write(line + chr(10))
             for line in tail:
                 self.bus.publish(run_id, line)
+
+    @staticmethod
+    def _describe_agent_changes(snapshot, collected, repo_root: Path) -> dict:
+        """What the agent did to the suite, including the parts nobody was watching.
+
+        The approval gate answers one question: may this *new* test join the suite. It has nothing
+        to say about a test that was rewritten or deleted — and on the first real generation run
+        here the agent removed an entire existing test and stripped assertions out of three more,
+        narrowing coverage to only what the recording happened to narrate. Every screen showed a
+        clean green run and one test awaiting approval.
+
+        So the removals get recorded too. Deliberately not blocked: the agent is sometimes right
+        (an assertion pinned to fixture data really should go), and a tool that refuses to let an
+        agent delete anything just gets worked around. It has to be *visible*, which is the thing
+        that was actually missing.
+        """
+        before, dirty_before = snapshot
+        out: dict = {"removed_nodeids": [], "files": [], "tree": "unknown"}
+
+        if before is not None and before.ok and collected.ok:
+            was = {item["nodeid"] for item in before.items}
+            now = {item["nodeid"] for item in collected.items}
+            out["removed_nodeids"] = sorted(was - now)
+
+        now_dirty = gitinfo.changed_paths(repo_root)
+        if now_dirty is None:
+            return out
+        out["tree"] = "known"
+        # Subtracted, so edits that were already in the tree when Convert was pressed are not
+        # laid at the agent's door. Keyed on path only: a file that was modified before and is
+        # modified again is indistinguishable from here, and guessing would be worse than
+        # leaving it out.
+        pre = {c.path for c in (dirty_before or [])} if dirty_before is not None else None
+        for change in now_dirty:
+            if pre is not None and change.path in pre:
+                continue
+            out["files"].append({"status": change.status, "path": change.path})
+        if pre is None:
+            out["tree"] = "no-baseline"     # could not read the tree before; all of this is "maybe"
+        return out
+
+    @staticmethod
+    def _changes_as_lines(changes: dict) -> list[str]:
+        lines: list[str] = []
+        removed = changes.get("removed_nodeids") or []
+        if removed:
+            lines.append("")
+            lines.append(f"WARNING: {len(removed)} test(s) no longer exist after this run:")
+            lines += [f"  - {nodeid}" for nodeid in removed]
+            lines.append("  Review the diff before merging. Generation is allowed to delete, but")
+            lines.append("  nothing else in this tool will tell you that it did.")
+
+        files = changes.get("files") or []
+        edited = [f for f in files if f["status"] != "untracked"]
+        if edited:
+            lines.append("")
+            lines.append(f"{len(edited)} existing file(s) changed:")
+            lines += [f"  {f['status']:<9} {f['path']}" for f in edited]
+        created = [f for f in files if f["status"] == "untracked"]
+        if created:
+            lines.append("")
+            lines.append(f"{len(created)} new file(s):")
+            lines += [f"  {f['path']}" for f in created]
+
+        if changes.get("tree") == "unknown":
+            lines.append("")
+            lines.append("Could not read the working tree, so the file list above is incomplete.")
+        elif changes.get("tree") == "no-baseline":
+            lines.append("")
+            lines.append("No before-snapshot of the tree, so some of these changes may predate "
+                         "the run.")
+        return lines
 
     def _command(self, row, run_dir: Path) -> tuple[list[str], dict[str, str]]:
         cfg = self.config

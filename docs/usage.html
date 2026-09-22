@@ -249,6 +249,19 @@ what lets it work for a test this dashboard had no part in creating.</p>
   an assertion nobody can trace.</p>
 </div>
 
+<h3>It also tells you what the agent took away</h3>
+
+<p>Approval answers one question: may this <em>new</em> test join the suite. It has nothing to say about a
+test that was rewritten or deleted — and on the first real conversion here the agent removed an existing
+test outright and stripped assertions out of three more files, narrowing the suite to only what the
+recording happened to narrate. The run finished green, one draft appeared for approval, and nothing said
+coverage had gone down.</p>
+
+<p>So every conversion now reports what changed in the working tree, and names any test that stopped
+existing. Deleting is not blocked, because sometimes it is right — an assertion pinned to fixture data
+really should go — and a tool that forbids it just gets worked around. It has to be visible, which is the
+part that was missing.</p>
+
 <h3>Written locally, run wherever</h3>
 
 <p>Writing tests wants a fast local loop. Running them against an environment only reachable from inside

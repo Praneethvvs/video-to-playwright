@@ -185,6 +185,35 @@ an empty log panel. Two things they deliberately do **not** do:
   tests do not exist here, and inventing rows from a remote report would put tests on the
   dashboard that nobody can find or run.
 
+### Waiting for a run you started
+
+`GET /api/runs/<id>` returns the run as JSON, including a `finished` flag:
+
+```bash
+until curl -sf -H "Authorization: Bearer $TESTBOARD_TOKEN" \
+        "$TESTBOARD_URL/api/runs/$RUN_ID" | jq -e '.finished' >/dev/null; do sleep 10; done
+```
+
+`finished` is the server's answer rather than the caller's, on purpose. A poller that hardcodes
+`passed|failed` waits forever on a run that crashed or timed out — which is exactly the situation
+somebody is polling to find out about.
+
+### What a conversion changed
+
+Approval covers a test *arriving*. It says nothing about one being rewritten or deleted, and an
+agent asked to write tests from a recording will sometimes decide an existing assertion is not
+supported by the narration and remove it. On the first real conversion here that took out a whole
+test and three files' worth of assertions, and every screen showed a clean green run.
+
+So a generation run records what it changed in the working tree and names every test that stopped
+existing, on the run page and in the log. It does not block the deletion: sometimes the agent is
+right, and a tool that forbids it just gets worked around. The failure being fixed is that nobody
+could see it.
+
+Reading the tree is best effort, and "could not tell" is reported as itself — never as "nothing
+changed". Edits already present when Convert was pressed are subtracted, so somebody mid-change
+is not blamed on the agent.
+
 ## What it will not do
 
 **It will not pretend to know something it does not.** A drift check that could not reach the
@@ -238,7 +267,7 @@ Until that is settled: `kubectl port-forward svc/testboard 8770:80`.
 pip install -e ".[dev]" && pytest
 ```
 
-82 tests, about three seconds, no browser and no network. They cover the properties that are expensive
+113 tests, about three seconds, no browser and no network. They cover the properties that are expensive
 to be wrong about rather than aiming at coverage:
 
 | | |
@@ -247,6 +276,8 @@ to be wrong about rather than aiming at coverage:
 | `test_auth.py` | a public bind without a token is refused; a prefix of the token does not pass; an implausible proxy header is never recorded as a name |
 | `test_transcripts.py` | every real file shape that has broken something: mm:ss cues, Word revision ids, `<w:br/>` between runs, a `.vtt` that parses to nothing |
 | `test_ingest.py` | an import never approves a test, never adds an inventory row, and never attributes a result to an ambiguous name |
+| `test_app_security.py` | the middleware stack as wired: every mutating route needs the token, a cross-site POST is refused, and the Referer cannot steer a redirect off-site |
+| `test_agent_changes.py` | a clean working tree reads as clean and an unreadable one reads as unknown; a deleted test is named; pre-existing edits are not blamed on the agent |
 
 They found a live defect on their first run: `hmac.compare_digest` accepts ASCII only when given
 `str`, so a token containing any non-ASCII character raised `TypeError` inside the auth middleware
@@ -261,4 +292,6 @@ and returned 500 where it should have returned 401.
   test tree. It is shown as inference, and it misses a locator assembled at runtime.
 - **No cross-repo view.** If an aggregate over several repos is ever wanted it belongs in one
   central place, not in six copies of this.
-- **No authentication.** It binds to `127.0.0.1` and warns if you tell it not to.
+- **No login of its own.** There are two modes and no third: loopback with nobody in front, or a
+  shared token. A per-user identity only exists when an authenticating proxy supplies one, and that
+  header is read in token mode only. Anyone holding the token can do anything this can do.

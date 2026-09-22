@@ -63,8 +63,14 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
             # Remembered for the session so a browser does not need the token in every URL.
             # SameSite=Strict is what stops another site using this cookie to act as the user.
             if presented and request.cookies.get(auth.COOKIE) != presented:
-                response.set_cookie(auth.COOKIE, presented, httponly=True, samesite="strict",
-                                    max_age=60 * 60 * 12)
+                response.set_cookie(
+                    auth.COOKIE, presented, httponly=True, samesite="strict",
+                    # Secure whenever the request arrived over TLS, which is how it will arrive
+                    # through an ingress. Setting it unconditionally would stop the cookie
+                    # working at all over plain http on a laptop.
+                    secure=request.url.scheme == "https",
+                    max_age=60 * 60 * 12,
+                )
             return response
 
         return PlainTextResponse(
@@ -97,7 +103,11 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
         """
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             site = request.headers.get("sec-fetch-site")
-            if site and site not in ("same-origin", "same-site", "none"):
+            # "same-site" is deliberately NOT accepted. On localhost every port is the same
+            # site, so a page served from another port on this machine would qualify — and in a
+            # cluster so would any sibling host under the same registrable domain. "none" is a
+            # user-initiated navigation, which a form post from another origin is not.
+            if site and site not in ("same-origin", "none"):
                 return PlainTextResponse(
                     f"Refused: this {request.method} came from another site "
                     f"(Sec-Fetch-Site: {site}). testboard only accepts changes made from its own "
@@ -130,6 +140,11 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
         if parsed.netloc and parsed.netloc != request.url.netloc:
             return fallback
         path = parsed.path or fallback
+        # A path of "//evil.example/x" is protocol-relative once it reaches a Location header,
+        # so the browser leaves this application entirely — an open redirect that survives the
+        # netloc check above, because "http://our-host//evil.example/x" parses with our netloc
+        # and that path. Collapse the leading slashes and require an absolute path.
+        path = "/" + path.lstrip("/")
         return f"{path}?{parsed.query}" if parsed.query else path
 
     def when(value: str | None) -> Markup:
@@ -175,6 +190,17 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
         try:
             yield
         finally:
+            # Cancelled and awaited, not abandoned. The startup collection writes to the
+            # database, and a shutdown during it closed the connection underneath a live write —
+            # an exception on the way out, and in the worst case a half-applied inventory.
+            if not task.done():
+                task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=15)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass            # expected: we are the one who cancelled it
+            except Exception as exc:
+                log.debug("startup collection ended with %s", exc)
             await executor.stop()
             database.close()
 
@@ -297,6 +323,14 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
             return HTMLResponse("<h1>No such run</h1>", status_code=404)
         run_dir = executor.run_dir(run_id)
         totals = json.loads(row["totals_json"]) if row["totals_json"] else None
+        # Defensive: this column is written by us, but a hand-edited database or a half-applied
+        # write should degrade to "no panel" rather than to a 500 on a page somebody is using to
+        # work out what went wrong.
+        try:
+            raw_changes = row["changes_json"]
+            changes = json.loads(raw_changes) if raw_changes else None
+        except (ValueError, TypeError, IndexError):
+            changes = None
         artifacts = []
         art_dir = run_dir / "artifacts"
         if art_dir.exists():
@@ -305,7 +339,7 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
                 for p in art_dir.rglob("*") if p.is_file()
             )
         return render(
-            "run.html", request, run=row, totals=totals, artifacts=artifacts,
+            "run.html", request, run=row, totals=totals, artifacts=artifacts, changes=changes,
             results=database.results_for_run(run_id),
             position=executor.queue_position(run_id) if row["status"] == "queued" else None,
             live=row["status"] in ("queued", "running"),
@@ -624,7 +658,11 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
         the approval record exists precisely to say which person decided.
         """
         try:
-            payload = await file.read()
+            # Read in bounded chunks and stop at the limit. `await file.read()` pulled the whole
+            # upload in first and only then compared its length, so the size limit protected
+            # nothing it was there to protect: an oversized report was already resident before
+            # anything decided to refuse it.
+            payload = await _read_capped(file, ingest.MAX_XML_BYTES)
             result = ingest.junit(
                 database, xml=payload, label=label or (file.filename or "Pipeline run"),
                 requested_by=auth.identity(request, policy),
@@ -644,11 +682,60 @@ def create_app(config: Config, policy: auth.Policy | None = None) -> FastAPI:
             "unmatched_cases": result.unknown,
         })
 
+    @app.get("/api/runs/{run_id}")
+    async def run_json(run_id: int):
+        """A run's state, for something that is not a browser.
+
+        Added because the only way to find out whether a run had finished was to fetch the HTML
+        page and grep it for a CSS class — which is what I ended up doing while verifying this,
+        and is not an interface anybody should have to use. A pipeline that starts a run needs to
+        be able to wait for it.
+        """
+        row = database.get_run(run_id)
+        if row is None:
+            return JSONResponse({"error": "no such run"}, status_code=404)
+        payload = {
+            key: row[key] for key in (
+                "id", "kind", "target", "label", "status", "error_reason", "requested_by",
+                "requested_at", "started_at", "finished_at", "exit_code", "timeout_seconds",
+                "destructive", "message", "git_sha", "git_branch", "git_dirty",
+            )
+        }
+        # `finished` rather than making every caller re-derive the set of terminal statuses.
+        # Getting that set wrong is how a poller loops forever on a crashed run.
+        payload["finished"] = row["status"] not in ("queued", "running")
+        payload["totals"] = json.loads(row["totals_json"]) if row["totals_json"] else None
+        if payload["totals"]:
+            payload["totals"].pop("cases", None)
+        payload["queue_position"] = (
+            executor.queue_position(run_id) if row["status"] == "queued" else None)
+        payload["url"] = f"/runs/{run_id}"
+        return JSONResponse(payload)
+
     @app.get("/healthz", response_class=PlainTextResponse)
     async def healthz():
         return "ok"
 
     return app
+
+
+async def _read_capped(upload, limit: int, chunk: int = 512 * 1024) -> bytes:
+    """Read an upload, refusing it the moment it goes over `limit`.
+
+    Deliberately reads one chunk past the limit so "exactly at the limit" is accepted and
+    "one byte over" is refused, rather than the boundary being decided by chunk size.
+    """
+    parts: list[bytes] = []
+    total = 0
+    while True:
+        piece = await upload.read(chunk)
+        if not piece:
+            break
+        total += len(piece)
+        if total > limit:
+            raise ValueError(f"that report is larger than the {limit // 1024 // 1024} MB limit")
+        parts.append(piece)
+    return b"".join(parts)
 
 
 def _sse(seq: int, line: str) -> str:
