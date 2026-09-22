@@ -60,6 +60,8 @@ class LogBus:
                 stream.subscribers.discard(queue)
                 log.debug("dropped a slow subscriber on run %s", run_id)
 
+    RETAIN_FINISHED = 8
+
     def finish(self, run_id: int) -> None:
         stream = self._streams.get(run_id)
         if stream is None:
@@ -70,6 +72,20 @@ class LogBus:
                 queue.put_nowait((None, None))
             except asyncio.QueueFull:
                 pass
+        self._evict_finished()
+
+    def _evict_finished(self) -> None:
+        """Drop the oldest finished streams.
+
+        A finished stream is kept for a short while so a browser that reconnects a moment later
+        still gets its replay from memory rather than re-reading the file. Keeping all of them
+        is a leak: every run's ring buffer would stay resident for the life of the process, and
+        this process is meant to run for months.
+        """
+        finished = [rid for rid, st in self._streams.items()
+                    if st.finished and not st.subscribers]
+        for run_id in sorted(finished)[:-self.RETAIN_FINISHED or None]:
+            self._streams.pop(run_id, None)
 
     def close(self, run_id: int) -> None:
         self._streams.pop(run_id, None)

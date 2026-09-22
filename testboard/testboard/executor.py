@@ -180,11 +180,24 @@ class Executor:
                 continue
             try:
                 await self._execute(row)
-            except Exception:                      # noqa: BLE001 - the loop must survive anything
+            except Exception as exc:               # noqa: BLE001 - the loop must survive anything
                 log.exception("run %s blew up in the executor", row["id"])
-                self.db.update_run(row["id"], status="error", error_reason="test_error",
-                                   finished_at=utcnow(),
-                                   message="testboard failed while running this; see its log")
+                # Say what went wrong. "See its log" is useless advice when the failure happened
+                # before anything was written to that log, which is exactly when it happens.
+                self.db.update_run(
+                    row["id"], status="error", error_reason="test_error", finished_at=utcnow(),
+                    message=f"testboard itself failed while starting this run: "
+                            f"{type(exc).__name__}: {exc}",
+                )
+            finally:
+                # Belt and braces. Each execute path clears its own state, but a failure in the
+                # few lines before their try blocks would otherwise pin the executor to a dead
+                # run and leave its SSE stream open for the life of the process.
+                if self._current_run_id == row["id"]:
+                    self.bus.finish(row["id"])
+                    self._current_run_id = None
+                    self._agent = None
+                    self._proc = None
 
     async def _housekeeping_loop(self) -> None:
         from . import retention
@@ -212,6 +225,15 @@ class Executor:
 
         if row["kind"] == KIND_GENERATE:
             await self._execute_generation(row, run_dir, log_path)
+            return
+
+        # Cancel can land between the worker dequeuing this row and the process starting. The
+        # handler sets cancel_requested and finds nothing running to kill, so without this check
+        # the run reports "cancelled" and then executes in full anyway.
+        if self.db.get_run(run_id)["cancel_requested"]:
+            self.db.update_run(run_id, status="cancelled", error_reason="cancelled",
+                               started_at=utcnow(), finished_at=utcnow(),
+                               message="cancelled before it started")
             return
 
         check = await preflight.before_run(self.config)
@@ -300,38 +322,50 @@ class Executor:
                                started_at=utcnow(), finished_at=utcnow(), message=detail)
             return
 
-        self.bus.open(run_id, log_path)
-        self._current_run_id = run_id
-        self.db.update_run(run_id, status="running", started_at=utcnow(),
-                           **gitinfo.describe(cfg.repo_root).as_fields())
-
-        handle = log_path.open("w", encoding="utf-8", errors="replace", newline="\n")
-
-        def emit(line: str) -> None:
-            handle.write(line + "\n")
-            handle.flush()
-            self.bus.publish(run_id, line)
+        if self.db.get_run(run_id)["cancel_requested"]:
+            self.db.update_run(run_id, status="cancelled", error_reason="cancelled",
+                               started_at=utcnow(), finished_at=utcnow(),
+                               message="cancelled before it started")
+            return
 
         cfg = self.config
-        video = (cfg.state_dir / source["video_path"]) if source["video_path"] else None
-        prompt = agentmod.PROMPT.format(
-            video=video or "(no video was uploaded — work from the transcript)",
-            transcript=source["transcript_name"] or "(inline)",
-            base_url=cfg.environment.base_url() or f"${cfg.environment.base_url_env}",
-            test_dir=", ".join(cfg.runner.test_paths),
-            transcript_text=source["transcript_text"][:400_000],
-        )
+        self.bus.open(run_id, log_path)
+        self._current_run_id = run_id
+        handle = None
 
-        self._agent = agentmod.CodexAgent(
-            repo_root=cfg.repo_root,
-            skill_path=cfg.generation.skill_path(cfg.repo_root),
-            model=cfg.generation.model,
-            sandbox=cfg.generation.sandbox,
-            env=cfg.environment.subprocess_env(),
-            state_dir=cfg.state_dir,
-        )
-
+        # Everything from bus.open() onward is inside this try, not just the agent call. Opening
+        # a stream and then raising before reaching the guarded section leaves the SSE generator
+        # live forever — is_live() stays true, the browser's log panel never terminates, and the
+        # subscriber is never released. Setting up the run is exactly where a mistake is most
+        # likely, so it is exactly what has to be covered.
         try:
+            self.db.update_run(run_id, status="running", started_at=utcnow(),
+                               **gitinfo.describe(cfg.repo_root).as_fields())
+            handle = log_path.open("w", encoding="utf-8", errors="replace", newline="\n")
+
+            def emit(line: str) -> None:
+                handle.write(line + "\n")
+                handle.flush()
+                self.bus.publish(run_id, line)
+
+            video = (cfg.state_dir / source["video_path"]) if source["video_path"] else None
+            prompt = agentmod.PROMPT.format(
+                video=video or "(no video was uploaded — work from the transcript)",
+                transcript=source["transcript_name"] or "(inline)",
+                base_url=cfg.environment.base_url() or f"${cfg.environment.base_url_env}",
+                test_dir=", ".join(cfg.runner.test_paths),
+                transcript_text=source["transcript_text"][:400_000],
+            )
+
+            self._agent = agentmod.CodexAgent(
+                repo_root=cfg.repo_root,
+                skill_path=cfg.generation.skill_path(cfg.repo_root),
+                model=cfg.generation.model,
+                sandbox=cfg.generation.sandbox,
+                env=cfg.environment.subprocess_env(),
+                state_dir=cfg.state_dir,
+            )
+
             result = await asyncio.wait_for(
                 self._agent.run(prompt=prompt, emit=emit),
                 timeout=row["timeout_seconds"],
@@ -344,16 +378,21 @@ class Executor:
                 "exit_code": 0 if result.ok else 1,
             }
         except asyncio.TimeoutError:
-            await self._agent.interrupt()
+            if self._agent is not None:
+                await self._agent.interrupt()
             fields = {"finished_at": utcnow(), "status": "timeout", "error_reason": "timeout",
                       "message": f"the agent was still working after {row['timeout_seconds']}s"}
         except Exception as exc:                       # noqa: BLE001
             log.exception("generation run %s failed", run_id)
-            emit(f"ERROR: {type(exc).__name__}: {exc}")
+            detail = f"{type(exc).__name__}: {exc}"
+            self.bus.publish(run_id, f"ERROR: {detail}")
+            if handle is not None:
+                handle.write(f"ERROR: {detail}\n")
             fields = {"finished_at": utcnow(), "status": "error", "error_reason": "agent_failed",
-                      "message": f"{type(exc).__name__}: {exc}"}
+                      "message": detail}
         finally:
-            handle.close()
+            if handle is not None:
+                handle.close()
             self.bus.finish(run_id)
             self._agent = None
             self._current_run_id = None
@@ -407,7 +446,11 @@ class Executor:
             #
             # Deselecting the unapproved keeps the command line short — there are usually a few
             # pending and many approved — and leaves the selection legible in the log.
-            unapproved = [t["nodeid"] for t in self.db.inventory() if t["state"] != "approved"]
+            # present_only=False deliberately. If a collection ever returns nothing — a broken
+            # import, a bad filter — every row is marked absent, and filtering on present would
+            # make this list empty and quietly run the unapproved tests in the next sweep.
+            unapproved = [t["nodeid"] for t in self.db.inventory(present_only=False)
+                          if t["state"] != "approved"]
             if target not in unapproved:
                 for nodeid in unapproved:
                     argv += ["--deselect", nodeid]
@@ -457,7 +500,13 @@ class Executor:
         # Append: the command line was written here before the process started.
         with log_path.open("a", encoding="utf-8", errors="replace", newline="\n") as fh:
             while True:
-                raw = await proc.stdout.readline()
+                try:
+                    raw = await proc.stdout.readline()
+                except (ValueError, asyncio.LimitOverrunError):
+                    # Longer than even the generous limit set in procs.spawn. Take what is
+                    # buffered and carry on: losing a line boundary is cosmetic, whereas letting
+                    # this propagate kills the pump and hangs the run until its timeout.
+                    raw = await proc.stdout.read(65536)
                 if not raw:
                     break
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")

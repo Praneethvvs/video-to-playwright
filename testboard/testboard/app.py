@@ -234,11 +234,16 @@ def create_app(config: Config) -> FastAPI:
             markers = sorted({m for t in tests.values() for m in t["markers"]})
 
         if any(m in config.safety.confirm_before_run for m in markers) and confirmed != "yes":
-            return JSONResponse(
-                {"error": "confirmation required",
-                 "markers": [m for m in markers if m in config.safety.confirm_before_run]},
-                status_code=400,
-            )
+            # Back to the page with an explanation, not a JSON blob. The browser gets here when
+            # JavaScript is off or the confirm dialog was bypassed, and a raw 400 body is a dead
+            # end for someone who just pressed a button.
+            gated = [m for m in markers if m in config.safety.confirm_before_run]
+            database.set_meta("last_upload", [
+                f"That run was not started: it includes tests marked {', '.join(gated)}, which "
+                f"change data in {config.environment.base_url() or config.environment.base_url_env}. "
+                f"Use the Run button on the page so the confirmation is recorded."
+            ])
+            return RedirectResponse(request.headers.get("referer", "/tests"), status_code=303)
 
         result = executor.enqueue_pytest(
             target=target, label=label or target or "Whole suite",
@@ -287,9 +292,16 @@ def create_app(config: Config) -> FastAPI:
         return RedirectResponse(request.headers.get("referer", "/tests"), status_code=303)
 
     @app.post("/inventory/refresh")
-    async def refresh_inventory():
-        await inventory.refresh(config, database)
-        return RedirectResponse("/tests", status_code=303)
+    async def refresh_inventory(request: Request):
+        result = await inventory.refresh(config, database)
+        if result.new_nodeids:
+            database.set_meta("last_upload", [
+                f"{len(result.new_nodeids)} new test(s) collected and awaiting approval."
+            ])
+        # Back where the button was pressed. Sending someone from Overview to Tests because a
+        # different page happens to host the same action is the kind of small wrongness that
+        # makes an interface feel unreliable.
+        return RedirectResponse(request.headers.get("referer", "/tests"), status_code=303)
 
     @app.post("/maintenance/sweep")
     async def manual_sweep():
@@ -368,8 +380,12 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/recordings/import")
     async def import_discovered(request: Request, path: str = Form(...)):
         candidate = (config.repo_root / path).resolve()
-        if config.repo_root not in candidate.parents or not candidate.is_file():
-            return JSONResponse({"error": "not a file in this repository"}, status_code=400)
+        # is_relative_to rather than a parents membership test: the latter is false for a file
+        # sitting directly in the root on some paths, and neither is a substitute for resolving
+        # first, which is what actually defeats `..`.
+        if not candidate.is_relative_to(config.repo_root) or not candidate.is_file():
+            database.set_meta("last_upload", [f"{path}: not a file in this repository"])
+            return RedirectResponse("/recordings", status_code=303)
 
         class _FileStream:
             """Adapts a file on disk to the same async read() the upload path expects."""
@@ -427,6 +443,21 @@ def create_app(config: Config) -> FastAPI:
             header = request.headers.get("last-event-id")
             if header and header.isdigit():
                 since = int(header)
+
+            # A queued run has no stream yet, because nothing has opened one. Answering "done"
+            # here told the page the run had finished, the page reloaded, and it queued again —
+            # a reload loop that only stops when the run reaches the front of the queue. Wait
+            # for it to start instead, heartbeating so the connection survives a proxy.
+            waited = 0.0
+            while not bus.is_live(run_id):
+                row = database.get_run(run_id)
+                if row is None or row["status"] not in ("queued", "running"):
+                    break
+                if waited and waited % 10 < 0.5:
+                    yield ": waiting for the run to start\n\n"
+                await asyncio.sleep(0.5)
+                waited += 0.5
+
             for seq, line in bus.backlog(run_id, since, log_path):
                 yield _sse(seq, line)
                 since = seq
