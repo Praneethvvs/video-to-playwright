@@ -56,6 +56,7 @@
   <a href="#workflow">The workflow</a>
   <a href="#output">What you get</a>
   <a href="#gotchas">The gotchas file</a>
+  <a href="#dashboard">The dashboard</a>
   <a href="#scope">Honest scope</a>
   <a href="#faq">FAQ</a>
 </nav>
@@ -210,6 +211,54 @@ obvious approach, each with the measurement that demonstrates it. A sample:</p>
   <li><code>expect.toPass()</code> is JavaScript-only, and what to use in Python instead</li>
 </ul>
 
+<h2 id="dashboard">The dashboard</h2>
+<p>A suite nobody looks at stops being true. <strong>testboard</strong> is a small web application the
+skill can install beside the tests: it lists what exists, when each test last passed, how old the
+project map is, whether anything has drifted, and it re-runs any single test on demand with the output
+streaming into the page.</p>
+
+<p>It is an application rather than a generated report for one reason. A page can show state; it cannot
+run anything, and "re-run this one test now" is the thing people actually want at the moment they are
+looking.</p>
+
+<pre><code>python scripts/install_testboard.py --repo path/to/test-repo --with-codex
+cd path/to/test-repo &amp;&amp; .testboard/venv/Scripts/python.exe -m testboard</code></pre>
+
+<p><strong>The application is not committed to your test repo.</strong> Only two small files are —
+<code>testboard.yaml</code>, which holds everything specific to that repository, and
+<code>testboard.lock</code>, which records the installed version. The code itself lives in a gitignored
+directory. Six repositories each carrying a copy of an application is six copies that drift apart, and
+this project has the evidence: the vendored scripts in those same repositories stay identical only for
+as long as somebody keeps checking.</p>
+
+<h3>Nothing enters the suite without a person saying so</h3>
+
+<p>Drop a recording and its transcript onto the Recordings page and press <strong>Convert to tests</strong>.
+An agent reads the narration and writes tests — and what comes out is a <strong>draft</strong>. It stays
+out of "run all" until somebody reads it and approves it, and approving records who did and when.</p>
+
+<p>A test that arrives through a merged pull request is treated identically: newly seen means pending.
+That is deliberate, and it is keyed on the test's own identity rather than a marker or a folder, which is
+what lets it work for a test this dashboard had no part in creating.</p>
+
+<div class="bad">
+  <p><strong>The dashboard does not argue with the agent about ambiguity.</strong> A recording often shows
+  a click without saying why, or an outcome the narrator never named. The agent reports what it could not
+  settle, and the page points you back to your own session and a pull request — because nothing here can
+  verify an answer against the running application, and a half-remembered reply typed into a box becomes
+  an assertion nobody can trace.</p>
+</div>
+
+<h3>Written locally, run wherever</h3>
+
+<p>Writing tests wants a fast local loop. Running them against an environment only reachable from inside
+a cluster wants a pod. Both are the same application: the container image is the same package, and the
+pipeline posts its results back so the dashboard reflects what actually ran rather than only what somebody
+started in its interface.</p>
+
+<p>It refuses to listen on anything but loopback without a token — refuses, rather than warning — because
+it can start runs that change data in an environment other people are using.</p>
+
 <h2 id="scope">Honest scope</h2>
 <p>The <strong>method</strong> is framework-independent, and the media and transcript scripts work on any
 recording. The <strong>gotchas</strong> are only as general as the libraries they name.</p>
@@ -219,7 +268,7 @@ recording. The <strong>gotchas</strong> are only as general as the libraries the
   toasts, against an environment that required <strong>no authentication</strong>. Genuinely unexercised:
   SSO / <code>storageState</code> login flows and role-gated UI; apps whose routes carry no state, so
   nothing is deep-linkable; iframes, multi-tab flows, native OS file dialogs, canvas-only interfaces;
-  TypeScript projects; and CI integration.</p>
+  TypeScript projects.</p>
 </div>
 
 <p>Treat the gotchas file as a <strong>starting checklist, not a specification</strong>. When your stack
