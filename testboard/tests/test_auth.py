@@ -89,8 +89,8 @@ def test_token_is_found_wherever_a_client_could_put_it(where, expected):
 def test_identity_prefers_a_validated_proxy_header(monkeypatch):
     monkeypatch.setenv("TESTBOARD_TOKEN", "y" * 32)
     policy = auth.policy_for("0.0.0.0")
-    request = FakeRequest(headers={"x-forwarded-user": "Jane Doe"})
-    assert auth.identity(request, policy) == "Jane Doe"
+    request = FakeRequest(headers={"x-forwarded-user": "jane.doe"})
+    assert auth.identity(request, policy) == "jane.doe"
 
 
 @pytest.mark.parametrize("bad", [

@@ -89,10 +89,10 @@ def test_an_empty_collection_does_not_establish_the_baseline(db):
 def test_a_decision_is_recorded_against_a_person(db):
     db.replace_inventory([dict(GENERATED[0])])
     db.replace_inventory(GENERATED, origin="merged")
-    db.decide(GENERATED[1]["nodeid"], "approved", "Jane Doe")
+    db.decide(GENERATED[1]["nodeid"], "approved", "jane.doe")
     row = [r for r in db.inventory() if r["name"] == "test_b[chromium]"][0]
     assert row["state"] == "approved"
-    assert row["decided_by"] == "Jane Doe"
+    assert row["decided_by"] == "jane.doe"
     assert row["decided_at"]
 
 
