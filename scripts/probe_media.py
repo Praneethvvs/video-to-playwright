@@ -29,6 +29,29 @@ from pathlib import Path
 from _ffmpeg import run
 
 
+def audio_verdict(*, peak_db: float | None, mean_db: float | None,
+                  silences: int, threshold_db: float) -> str:
+    """Decide whether a track plausibly carries narration.
+
+    Loudness decides this, not the number of pauses. A pure pause count is the inverse of what it
+    looks like: `silencedetect` emits one event per *silent* stretch, so a track that is loud from
+    the first frame to the last emits none at all — and scoring that as zero speech reported the
+    loudest possible recording as the quietest.
+
+    Separate from probe() so it can be tested without ffmpeg or a media file.
+    """
+    if peak_db is None or peak_db < -80:
+        return (f"SILENT — peak {peak_db} dB is inaudible. No narration; every expected result "
+                "must come from a human.")
+    if mean_db is None or mean_db < threshold_db:
+        return (f"NEARLY SILENT — mean {mean_db} dB is below the {threshold_db} dB floor, though "
+                f"it peaks at {peak_db} dB. Usually a UI chime rather than narration; listen "
+                "before relying on it.")
+    return (f"AUDIO PRESENT — mean {mean_db} dB, above the {threshold_db} dB floor, in "
+            f"{silences + 1} audible run(s). Likely narration, but this is a loudness heuristic "
+            "and not speech detection. Listen to a sample, and ask for the transcript.")
+
+
 def probe(path: Path, speech_threshold_db: float) -> dict:
     info = run(["-i", str(path)])
 
@@ -67,8 +90,17 @@ def probe(path: Path, speech_threshold_db: float) -> dict:
             "max_volume_db": float(peak.group(1)) if peak else None,
         }
 
-        # Count stretches above the noise floor. A track with narration has many; a track with a
-        # single UI chime has one or two.
+        # `silencedetect` reports SILENCES, not sound. Each `silence_end` marks the end of one
+        # quiet stretch, so the count says how often the speaker paused — it is not a count of
+        # speech.
+        #
+        # Counting those and calling them "non-silent segments" inverted the whole test. A track
+        # that is loud from the first frame to the last emits *zero* silence events, scored 0, and
+        # was reported NEARLY SILENT — the loudest possible recording classified as the quietest.
+        # It survived because narration with ordinary pauses does generate many events, which is
+        # the one case it was built against.
+        #
+        # So loudness decides the verdict, and the pauses are only ever supporting detail.
         sil = run(
             [
                 "-i", str(path),
@@ -76,31 +108,19 @@ def probe(path: Path, speech_threshold_db: float) -> dict:
                 "-vn", "-f", "null", "-",
             ]
         )
-        gaps = len(re.findall(r"silence_end", sil))
-        out["audio"]["non_silent_segments"] = gaps
+        silences = len(re.findall(r"silence_end", sil))
+        out["audio"]["silent_stretches"] = silences
+        # n silences cut the track into at most n+1 audible runs. With no silences at all the
+        # whole track is one continuous run, which is the case that used to score zero.
+        out["audio"]["audible_runs"] = silences + 1
         out["audio"]["noise_floor_db"] = speech_threshold_db
 
-        # The peak test runs first and overrides the segment count, because a track can register a
-        # segment boundary while still being inaudible. Saying so explicitly avoids the confusing
-        # combination of "1 non-silent segment" and a SILENT verdict.
-        peak_db = out["audio"]["max_volume_db"]
-        if peak_db is None or peak_db < -80:
-            verdict = (
-                f"SILENT — peak {peak_db} dB is inaudible, so the {gaps} detected segment(s) are "
-                "artefacts. No narration; every expected result must come from a human."
-            )
-        elif gaps <= 2:
-            verdict = (
-                f"NEARLY SILENT — {gaps} stretch(es) above {speech_threshold_db} dB. "
-                "Usually a UI chime rather than narration; listen before relying on it."
-            )
-        else:
-            verdict = (
-                f"AUDIO PRESENT — {gaps} stretches above {speech_threshold_db} dB. "
-                "Likely narration, but this is a loudness heuristic, not speech detection. "
-                "Listen to a sample, and ask for the transcript."
-            )
-        out["audio"]["verdict"] = verdict
+        out["audio"]["verdict"] = audio_verdict(
+            peak_db=out["audio"]["max_volume_db"],
+            mean_db=out["audio"]["mean_volume_db"],
+            silences=silences,
+            threshold_db=speech_threshold_db,
+        )
 
     warnings = []
     v = out.get("video", {})
@@ -151,7 +171,7 @@ def main() -> int:
           f"{v.get('bitrate_kbps', '?')} kb/s, {v.get('codec', '?')}")
     if a := result.get("audio"):
         print(f"Audio      mean {a['mean_volume_db']} dB, peak {a['max_volume_db']} dB, "
-              f"{a['non_silent_segments']} non-silent segment(s)")
+              f"{a['silent_stretches']} pause(s)")
         print(f"           -> {a['verdict']}")
     else:
         print("Audio      none")

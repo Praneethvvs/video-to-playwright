@@ -48,7 +48,7 @@ SPEAKER = re.compile(r"^<v\s+([^>]+)>(.*)$")
 WORD_PARA = re.compile(r"<w:p[ >].*?</w:p>|<w:p/>", re.S)
 # Text runs and line breaks, in document order. A <w:br/> sits *between* runs rather than inside
 # one, so it has to be matched in the same pass or every spoken line in a paragraph runs together
-# into "...summary page.So the prerequisite is...".
+# into "...obsolescence case.So the prerequisite is...".
 WORD_RUN = re.compile(r"<w:t(?:\s[^>]*)?>(.*?)</w:t>|(<w:br\s*/>)", re.S)
 # Teams writes the speaker and offset at the head of the utterance, in the same paragraph as the
 # first line of speech: "Jane Doe   0:10So this recording is for...".
@@ -223,7 +223,15 @@ def read(path: Path) -> dict:
     has_timestamps = bool(cues) and timed >= max(1, len(cues) // 4)
 
     note = ""
-    if cue_format_failed:
+    if not cues:
+        # Checked before the other two, because both of them explain why a file with content in it
+        # produced nothing — and neither is true of a file with no content. An empty .vtt was
+        # blamed on "an unexpected dialect", and an empty .txt on a Teams .docx export, which is
+        # not even the format in hand.
+        note = ("This transcript is empty — no readable text at all. Narration is the only source "
+                "of expected results, so nothing can be generated from it. Check the file was "
+                "exported fully, and ask for a re-export if it was not.")
+    elif cue_format_failed:
         # Blaming the export format would be wrong here: this IS the .vtt, and we could not read it.
         note = (f"This looked like a cue file but no cues could be read from it, so its raw lines "
                 f"are shown instead. That usually means an unexpected dialect of {suffix} — check "
@@ -254,6 +262,13 @@ def main() -> int:
 
     result = read(path)
     cues = result["utterances"]
+
+    # An empty transcript is a blocker, not a result. Checkpoint 0 of the workflow treats the
+    # narration as the one input that cannot be worked around, so exiting 0 here would let a
+    # scripted run continue and invent its own expected results.
+    if not cues:
+        print(f"{path.name}: {result['note']}")
+        return 1
     for c in cues:
         c["tags"] = classify(c["text"])
 

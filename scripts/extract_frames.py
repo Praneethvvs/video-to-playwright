@@ -179,10 +179,27 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    # Refuse a video that is not there, rather than writing an empty index and exiting 0. The
+    # other media scripts already exit 1 on a missing file; this one reported "0 frames" and a
+    # duration of None, which reads as "this recording has nothing in it" rather than "the path
+    # was wrong" — and a scripted run carried on and tried to read a UI out of an empty directory.
+    video = Path(args.video)
+    if not video.exists():
+        print(f"File not found: {video}", file=sys.stderr)
+        return 1
+
     idx = extract(
-        Path(args.video), Path(args.out), args.target,
+        video, Path(args.out), args.target,
         args.uniform_every, args.width, args.gap_seconds,
     )
+
+    # ffmpeg can open a file and still yield nothing usable — a zero-length capture, or a
+    # container whose video stream will not decode. That is a failure, not a recording that
+    # happens to contain no scene changes.
+    if not idx["scene_frames"] and not idx["uniform_frames"]:
+        print(f"No frames could be extracted from {video}. The file exists but ffmpeg produced "
+              f"nothing from it — check that it plays.", file=sys.stderr)
+        return 1
 
     print(f"\nduration       {idx.get('duration_seconds')}s")
     print(f"scene frames   {len(idx['scene_frames'])}  (threshold {idx['scene_threshold']})")
